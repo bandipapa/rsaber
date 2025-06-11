@@ -1,0 +1,57 @@
+[package]
+
+name = "rsaber_android"
+edition.workspace = true
+description.workspace = true
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+readme.workspace = true
+license-file.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+
+android-activity = {version = "0.6.0", features = ["native-activity"]}
+openxr = {version = "0.19.0", features = ["loaded"]}
+
+rsaber_lib = {path = "../lib", version = "0.1.0", features = ["xr"]}
+
+[lib]
+
+crate-type = ["cdylib"]
+
+[package.metadata.android]
+
+package = "com.bandipapa.rsaber"
+assets = "../asset"
+runtime_libs = "lib"
+
+# See https://developer.oculus.com/documentation/native/android/mobile-native-manifest/
+
+[package.metadata.android.sdk]
+
+min_sdk_version = 32
+target_sdk_version = 32
+
+[[package.metadata.android.application.meta_data]]
+
+name="com.oculus.supportedDevices"
+value="quest2|questpro|quest3|quest3s"
+
+[package.metadata.android.application.activity]
+
+orientation = "landscape"
+theme = "@android:style/Theme.Black.NoTitleBar.Fullscreen"
+config_changes = "density|keyboard|keyboardHidden|navigation|orientation|screenLayout|screenSize|uiMode"
+launch_mode = "singleTask"
+resizeable_activity = false
+
+[[package.metadata.android.application.activity.intent_filter]]
+
+actions = ["android.intent.action.MAIN"]
+categories = [
+    "android.intent.category.LAUNCHER",
+    "com.oculus.intent.category.VR"
+]

@@ -1,0 +1,36 @@
+[package]
+
+name = "rsaber_lib"
+edition.workspace = true
+description.workspace = true
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+readme.workspace = true
+license-file.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+
+ash = {version = "0.38.0", optional = true}
+atomic_enum = "0.3.0"
+bytemuck = {version = "1.23.1", features = ["aarch64_simd", "avx512_simd"]}
+cfg-if = "1.0.1"
+cgmath = "0.18.0"
+cpal = {package = "rsaber_hackedcpal", version = "0.1.0"}
+openxr = {version = "0.19.0", optional = true}
+rubato = "0.16.2"
+serde = {version = "1.0.226", features = ["derive"]}
+serde_json = "1.0.145"
+symphonia = {version = "0.5.4", default-features = false, features = ["mp3", "ogg", "vorbis", "opt-simd"]}
+wgpu = {version = "26.0.1", default-features = false, features = ["std", "parking_lot", "vulkan", "wgsl"]}
+
+[target.'cfg(target_os = "android")'.dependencies]
+
+android-activity = {version = "0.6.0", features = ["native-activity"]}
+
+[features]
+
+window = []
+xr = ["dep:ash", "dep:openxr"]

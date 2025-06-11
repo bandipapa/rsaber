@@ -1,0 +1,64 @@
+{
+  "version": "4.0.1",
+  "song": {
+    "title": "Divinity",
+    "subTitle": "(ft. Amy Millan)",
+    "author": "Porter Robinson"
+  },
+  "audio": {
+    "songFilename": "Amy Millan - Divinity.egg",
+    "songDuration": 370.371,
+    "audioDataFilename": "AudioData.dat",
+    "bpm": 179.988,
+    "lufs": 0.0,
+    "previewStartTime": 23.0,
+    "previewDuration": 15.0
+  },
+  "songPreviewFilename": "Amy Millan - Divinity.egg",
+  "coverImageFilename": "ab67616d0000b2731f675e7b8bae408653346dd9.jpg",
+  "environmentNames": [
+    "ColliderEnvironment"
+  ],
+  "colorSchemes": [
+    {
+      "overrideNotes": true,
+      "overrideLights": true,
+      "colorSchemeName": "Divinity",
+      "saberAColor": "E07CE4FF",
+      "saberBColor": "8FD3EDFF",
+      "environmentColor0": "E07CE4FF",
+      "environmentColor1": "8FD3EDFF",
+      "obstaclesColor": "FFFFFFFF",
+      "environmentColor0Boost": "9805D6FF",
+      "environmentColor1Boost": "3437E4FF"
+    }
+  ],
+  "difficultyBeatmaps": [
+    {
+      "characteristic": "Standard",
+      "difficulty": "ExpertPlus",
+      "beatmapAuthors": {
+        "mappers": [
+          "Scorefam"
+        ],
+        "lighters": [
+          "Scorefam"
+        ]
+      },
+      "environmentNameIdx": 0,
+      "beatmapColorSchemeIdx": 0,
+      "noteJumpMovementSpeed": 17.0,
+      "noteJumpStartBeatOffset": -0.2,
+      "beatmapDataFilename": "ExpertPlus.beatmap.dat",
+      "lightshowDataFilename": "ExpertPlus.lightshow.dat"
+    }
+  ],
+  "customData": {
+    "editors": {
+      "lastEditedBy": "ChroMapper",
+      "ChroMapper": {
+        "version": "0.12.874"
+      }
+    }
+  }
+}

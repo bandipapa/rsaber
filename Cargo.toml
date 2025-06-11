@@ -1,0 +1,16 @@
+[workspace]
+
+resolver = "3"
+members = ["android", "pc", "pcvr", "lib"]
+
+[workspace.package]
+
+edition = "2024"
+description = "rsaber"
+version = "0.1.0"
+authors = ["András Szalai <andrew@bandipapa.com>"]
+repository = "https://github.com/bandipapa/rsaber"
+readme = "README.md"
+license-file = "LICENSE"
+keywords = ["gamedev"]
+categories = ["games"]

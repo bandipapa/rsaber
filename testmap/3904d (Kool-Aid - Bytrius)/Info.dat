@@ -1,0 +1,279 @@
+{
+  "_version": "2.1.0",
+  "_songName": "Kool-Aid",
+  "_songSubName": "",
+  "_songAuthorName": "Bring Me The Horizon",
+  "_levelAuthorName": "Bytrius",
+  "_beatsPerMinute": 150.0,
+  "_songTimeOffset": 0.0,
+  "_shuffle": 0.0,
+  "_shufflePeriod": 0.5,
+  "_previewStartTime": 40.5,
+  "_previewDuration": 10.0,
+  "_songFilename": "song.egg",
+  "_coverImageFilename": "cover.jpg",
+  "_environmentName": "DragonsEnvironment",
+  "_allDirectionsEnvironmentName": "GlassDesertEnvironment",
+  "_environmentNames": [],
+  "_colorSchemes": [],
+  "_customData": {
+    "_editors": {
+      "_lastEditedBy": "ChroMapper",
+      "ChroMapper": {
+        "version": "0.9.690"
+      }
+    }
+  },
+  "_difficultyBeatmapSets": [
+    {
+      "_beatmapCharacteristicName": "Standard",
+      "_difficultyBeatmaps": [
+        {
+          "_difficulty": "Easy",
+          "_difficultyRank": 1,
+          "_beatmapFilename": "EasyStandard.dat",
+          "_noteJumpMovementSpeed": 9.0,
+          "_noteJumpStartBeatOffset": 0.25,
+          "_beatmapColorSchemeIdx": 0,
+          "_environmentNameIdx": 0,
+          "_customData": {
+            "_suggestions": [
+              "Chroma"
+            ],
+            "_colorLeft": {
+              "r": 0.81,
+              "g": 0.122,
+              "b": 0.521
+            },
+            "_colorRight": {
+              "r": 0.454,
+              "g": 0.454,
+              "b": 0.454
+            },
+            "_envColorLeft": {
+              "r": 0.722,
+              "g": 0.114,
+              "b": 0.188
+            },
+            "_envColorRight": {
+              "r": 0.868,
+              "g": 0.675,
+              "b": 0.244
+            },
+            "_envColorLeftBoost": {
+              "r": 1,
+              "g": 0.455,
+              "b": 0.799
+            },
+            "_envColorRightBoost": {
+              "r": 0.875,
+              "g": 0.461,
+              "b": 0.297
+            },
+            "_obstacleColor": {
+              "r": 1,
+              "g": 0.455,
+              "b": 0.799
+            }
+          }
+        },
+        {
+          "_difficulty": "Normal",
+          "_difficultyRank": 3,
+          "_beatmapFilename": "NormalStandard.dat",
+          "_noteJumpMovementSpeed": 12.0,
+          "_noteJumpStartBeatOffset": 0.75,
+          "_beatmapColorSchemeIdx": 0,
+          "_environmentNameIdx": 0,
+          "_customData": {
+            "_suggestions": [
+              "Chroma"
+            ],
+            "_colorLeft": {
+              "r": 0.81,
+              "g": 0.122,
+              "b": 0.521
+            },
+            "_colorRight": {
+              "r": 0.454,
+              "g": 0.454,
+              "b": 0.454
+            },
+            "_envColorLeft": {
+              "r": 0.722,
+              "g": 0.114,
+              "b": 0.188
+            },
+            "_envColorRight": {
+              "r": 0.868,
+              "g": 0.675,
+              "b": 0.244
+            },
+            "_envColorLeftBoost": {
+              "r": 1,
+              "g": 0.455,
+              "b": 0.799
+            },
+            "_envColorRightBoost": {
+              "r": 0.875,
+              "g": 0.461,
+              "b": 0.297
+            },
+            "_obstacleColor": {
+              "r": 1,
+              "g": 0.455,
+              "b": 0.799
+            }
+          }
+        },
+        {
+          "_difficulty": "Hard",
+          "_difficultyRank": 5,
+          "_beatmapFilename": "HardStandard.dat",
+          "_noteJumpMovementSpeed": 14.0,
+          "_noteJumpStartBeatOffset": 0.0,
+          "_beatmapColorSchemeIdx": 0,
+          "_environmentNameIdx": 0,
+          "_customData": {
+            "_suggestions": [
+              "Chroma"
+            ],
+            "_colorLeft": {
+              "r": 0.81,
+              "g": 0.122,
+              "b": 0.521
+            },
+            "_colorRight": {
+              "r": 0.454,
+              "g": 0.454,
+              "b": 0.454
+            },
+            "_envColorLeft": {
+              "r": 0.722,
+              "g": 0.114,
+              "b": 0.188
+            },
+            "_envColorRight": {
+              "r": 0.868,
+              "g": 0.675,
+              "b": 0.244
+            },
+            "_envColorLeftBoost": {
+              "r": 1,
+              "g": 0.455,
+              "b": 0.799
+            },
+            "_envColorRightBoost": {
+              "r": 0.875,
+              "g": 0.461,
+              "b": 0.297
+            },
+            "_obstacleColor": {
+              "r": 1,
+              "g": 0.455,
+              "b": 0.799
+            }
+          }
+        },
+        {
+          "_difficulty": "Expert",
+          "_difficultyRank": 7,
+          "_beatmapFilename": "ExpertStandard.dat",
+          "_noteJumpMovementSpeed": 16.0,
+          "_noteJumpStartBeatOffset": -0.425,
+          "_beatmapColorSchemeIdx": 0,
+          "_environmentNameIdx": 0,
+          "_customData": {
+            "_suggestions": [
+              "Chroma"
+            ],
+            "_colorLeft": {
+              "r": 0.81,
+              "g": 0.122,
+              "b": 0.521
+            },
+            "_colorRight": {
+              "r": 0.454,
+              "g": 0.454,
+              "b": 0.454
+            },
+            "_envColorLeft": {
+              "r": 0.722,
+              "g": 0.114,
+              "b": 0.188
+            },
+            "_envColorRight": {
+              "r": 0.868,
+              "g": 0.675,
+              "b": 0.244
+            },
+            "_envColorLeftBoost": {
+              "r": 1,
+              "g": 0.455,
+              "b": 0.799
+            },
+            "_envColorRightBoost": {
+              "r": 0.875,
+              "g": 0.461,
+              "b": 0.297
+            },
+            "_obstacleColor": {
+              "r": 1,
+              "g": 0.455,
+              "b": 0.799
+            }
+          }
+        },
+        {
+          "_difficulty": "ExpertPlus",
+          "_difficultyRank": 9,
+          "_beatmapFilename": "ExpertPlusStandard.dat",
+          "_noteJumpMovementSpeed": 18.0,
+          "_noteJumpStartBeatOffset": -0.75,
+          "_beatmapColorSchemeIdx": 0,
+          "_environmentNameIdx": 0,
+          "_customData": {
+            "_suggestions": [
+              "Chroma"
+            ],
+            "_colorLeft": {
+              "r": 0.81,
+              "g": 0.122,
+              "b": 0.521
+            },
+            "_colorRight": {
+              "r": 0.454,
+              "g": 0.454,
+              "b": 0.454
+            },
+            "_envColorLeft": {
+              "r": 0.722,
+              "g": 0.114,
+              "b": 0.188
+            },
+            "_envColorRight": {
+              "r": 0.868,
+              "g": 0.675,
+              "b": 0.244
+            },
+            "_envColorLeftBoost": {
+              "r": 1,
+              "g": 0.455,
+              "b": 0.799
+            },
+            "_envColorRightBoost": {
+              "r": 0.875,
+              "g": 0.461,
+              "b": 0.297
+            },
+            "_obstacleColor": {
+              "r": 1,
+              "g": 0.455,
+              "b": 0.799
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
