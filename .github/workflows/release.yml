@@ -1,0 +1,60 @@
+# TODO: use ANDROID_HOME instead of hardcoded C:\Android\android-sdk
+# TODO: determine android platform level from Cargo.toml
+# TODO: use cache
+# TODO: integrate crate publish
+
+name: release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    permissions:
+      contents: write
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v5
+
+    - name: Test
+      run: |
+        cd lib
+        cargo test
+
+    - name: Build pc
+      run: |
+        cd pc
+        cargo build --release
+
+    - name: Build pcvr
+      run: |
+        cd pcvr
+        cargo build --release
+
+    - name: Prepare android
+      run: |
+        rustup target add aarch64-linux-android
+        cargo install cargo-apk
+        C:\Android\android-sdk\cmdline-tools\latest\bin\sdkmanager --install "platforms;android-32"
+
+    - name: Build android
+      run: |
+        cd android
+        $Env:CARGO_APK_RELEASE_KEYSTORE = "$PWD\keystore"
+        $Env:CARGO_APK_RELEASE_KEYSTORE_PASSWORD = "${{ secrets.ANDROID_KEYSTORE_PW }}"
+        [System.Convert]::FromBase64String("${{ secrets.ANDROID_KEYSTORE }}") | Set-Content $Env:CARGO_APK_RELEASE_KEYSTORE -AsByteStream
+        cargo apk build --release
+        del $Env:CARGO_APK_RELEASE_KEYSTORE
+
+    - name: Release
+      uses: softprops/action-gh-release@v2
+      with:
+        files: |
+          target/release/rsaber_pc.exe
+          target/release/rsaber_pcvr.exe
+          target/release/apk/rsaber_android.apk

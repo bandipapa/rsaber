@@ -3,8 +3,19 @@ use std::cell::RefCell;
 use cgmath::{Matrix4, Quaternion, Vector3};
 use wgpu::Device;
 
-use crate::AssetManagerRc;
-use crate::model::{Color, InstPhongColor, InstShaderType, Mesh, Model, ModelFactory, ModelHandle, Obj, PhongParam};
+use crate::asset::AssetManagerRc;
+use crate::model::{Color, InstPhongColorBuf, InstShaderImplType, InstShaderType, Mesh, Model, ModelFactory, ModelHandle, Obj, PhongParam};
+use crate::ui::UIManagerRc;
+
+pub const SABER_DIR: Vector3<f32> = Vector3::new(0.0, 0.0, 1.0); // Saber direction in case of neutral/identity rotation.
+pub const SABER_HANDLE_PHONG_PARAM: PhongParam = PhongParam::new(0.1, 0.2, 0.3, 64.0);
+pub const SABER_RAY_PHONG_PARAM: PhongParam = PhongParam::new(1.0, 0.0, 0.0, 0.0);
+
+pub enum SaberVisibility {
+    Hidden,
+    Handle,
+    HandleRay,
+}
 
 pub struct SaberParam {
     handle_color: Color,
@@ -38,7 +49,7 @@ impl ModelFactory for SaberParam {
         ])
     }
 
-    fn create(self, handle: ModelHandle) -> Self::Model {
+    fn create(self, handle: ModelHandle, _device: &Device, _inst_sh_impls: &mut [InstShaderImplType], _ui_manager: UIManagerRc) -> Self::Model {
         Saber::new(self, handle)
     }
 }
@@ -66,9 +77,15 @@ impl Saber {
         }
     }
 
-    pub fn set_visible(&self, visible: bool) {
-        self.handle.set_visible(0, visible);
-        self.handle.set_visible(1, visible);
+    pub fn set_visible(&self, visibility: SaberVisibility) {
+        let (handle, ray) = match visibility {
+            SaberVisibility::Hidden => (false, false),
+            SaberVisibility::Handle => (true, false),
+            SaberVisibility::HandleRay => (true, true),
+        };
+
+        self.handle.set_visible(0, handle);
+        self.handle.set_visible(1, ray);
     }
 
     pub fn set_pos(&self, pos: &Vector3<f32>) {
@@ -81,7 +98,7 @@ impl Saber {
 }
 
 impl Model for Saber {
-    fn fill_phong_color(&self, inst_index: u32, inst_sh_buf: &mut InstPhongColor) {
+    fn fill_phong_color(&self, inst_index: u32, inst_sh_buf: &mut InstPhongColorBuf) {
         let (color, phong_param) = match inst_index {
             0 => (&self.param.handle_color, &self.param.handle_phong_param),
             1 => (&self.param.ray_color, &self.param.ray_phong_param),

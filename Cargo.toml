@@ -7,7 +7,7 @@ members = ["android", "pc", "pcvr", "lib"]
 
 edition = "2024"
 description = "rsaber"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["András Szalai <andrew@bandipapa.com>"]
 repository = "https://github.com/bandipapa/rsaber"
 readme = "README.md"

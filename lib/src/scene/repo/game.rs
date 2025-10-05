@@ -4,10 +4,10 @@ use std::rc::Rc;
 
 use cgmath::{Angle, Deg, Quaternion, Rotation3, Vector3};
 
-use crate::AssetManagerRc;
+use crate::asset::AssetManagerRc;
 use crate::audio::{AudioEngineRc, AudioFileFactory, AudioFileHandle, AudioFileTimestamp};
 use crate::model::*;
-use crate::scene::{Scene, SceneFactory, SceneInput, SceneManager, ScenePose};
+use crate::scene::{MenuParam, Scene, SceneFactory, SceneInput, SceneManager, ScenePose};
 use crate::songinfo::{BPMInfo, NoteCutDir, NoteType, SongInfo};
 
 const CUBE_SIZE: f32 = 0.5; // [m]
@@ -25,18 +25,15 @@ const ZONE_OUT_V: f32 = 15.0; // [m/s]
 
 pub struct GameParam {
     song_info: SongInfo,
+    beatmap_info_index: usize, // TODO: usize or smaller?
 }
 
 impl GameParam {
-    pub fn new(song_info: SongInfo) -> Self {
+    pub fn new(song_info: SongInfo, beatmap_info_index: usize) -> Self {
         Self {
             song_info,
+            beatmap_info_index,
         }
-    }
-
-    pub fn get_demo(asset_mgr: AssetManagerRc) -> Self { // TODO: this method will go away once we have menu system
-        let song_info = SongInfo::load(asset_mgr, "song/demo").expect("Unable to load song info");
-        GameParam::new(song_info)
     }
 }
 
@@ -54,7 +51,6 @@ pub struct Game {
     saber_r: Rc<Saber>,
     audio_file: AudioFileHandle,
     inner: RefCell<Inner>,
-    asset_mgr: AssetManagerRc,
 }
 
 struct CubeInfo {
@@ -68,24 +64,16 @@ struct CubeInfo {
 struct Inner {
     start: bool,
     cube_range: Range<usize>,
+    prev_click: bool,
 }
 
 impl Game {
     fn new(param: GameParam, asset_mgr: AssetManagerRc, model_reg: &mut ModelRegistry, audio_engine: AudioEngineRc) -> Self {
-        let white = Color::from_srgb(0xff, 0xff, 0xff);
         let song_info = param.song_info;
 
-        // Select beatmap info.
-        // TODO: this logic will go away once we have menu system
+        // Determine color scheme.
 
-        let mut beatmap_info_opt = song_info.get_beatmap_infos().iter().find(|beatmap_info| beatmap_info.get_characteristic() == "Standard" && beatmap_info.get_difficulty() == "Expert");
-        if beatmap_info_opt.is_none() {
-            beatmap_info_opt = song_info.get_beatmap_infos().iter().find(|beatmap_info| beatmap_info.get_characteristic() == "Standard");
-        }
-        if beatmap_info_opt.is_none() {
-            beatmap_info_opt = Some(&song_info.get_beatmap_infos()[0]);
-        }
-        let beatmap_info = beatmap_info_opt.expect("Beatmap info expected");
+        let beatmap_info = &song_info.get_beatmap_infos()[param.beatmap_info_index];
 
         let color_scheme = if let Some(color_scheme_index) = beatmap_info.get_color_scheme_index_opt() && let Some(color_scheme) = song_info.get_color_scheme(color_scheme_index) {
             color_scheme
@@ -139,7 +127,7 @@ impl Game {
                     NoteType::Right => &color_r,
                 };
 
-                let cube_param = CubeParam::new(symbol, color, &body_phong_param, &white, &symbol_phong_param);
+                let cube_param = CubeParam::new(symbol, color, &body_phong_param, &COLOR_WHITE, &symbol_phong_param);
                 let cube = model_reg.create(cube_param);
                 cube.set_scale(CUBE_SIZE);
 
@@ -170,25 +158,22 @@ impl Game {
 
         // Setup floor.
 
-        let floor_param = FloorParam::new(&white);
+        let floor_param = FloorParam::new(&COLOR_WHITE);
         let floor = model_reg.create(floor_param);
         floor.set_visible(true);
         floor.set_pos(&Vector3::new(0.0, 0.0, 0.0));
 
         // Setup sabers.
 
-        let handle_phong_param = PhongParam::new(0.1, 0.2, 0.3, 64.0);
-        let ray_phong_param = PhongParam::new(1.0, 0.0, 0.0, 0.0);
-
-        let saber_param = SaberParam::new(&color_l, &handle_phong_param, &color_l, &ray_phong_param);
+        let saber_param = SaberParam::new(&color_l, &SABER_HANDLE_PHONG_PARAM, &color_l, &SABER_RAY_PHONG_PARAM);
         let saber_l = model_reg.create(saber_param);
 
-        let saber_param = SaberParam::new(&color_r, &handle_phong_param, &color_r, &ray_phong_param);
+        let saber_param = SaberParam::new(&color_r, &SABER_HANDLE_PHONG_PARAM, &color_r, &SABER_RAY_PHONG_PARAM);
         let saber_r = model_reg.create(saber_param);
 
         // Setup audio.
 
-        let audio_file_factory = AudioFileFactory::new(Rc::clone(&asset_mgr), song_info.get_song_filename());
+        let audio_file_factory = AudioFileFactory::new(asset_mgr, song_info.get_song_filename());
         let audio_file = audio_engine.add(audio_file_factory);
 
         let inner = Inner {
@@ -196,7 +181,8 @@ impl Game {
             cube_range: Range {
                 start: 0,
                 end: 0,
-            }
+            },
+            prev_click: true,
         };
         
         Self {
@@ -205,7 +191,6 @@ impl Game {
             saber_r,
             audio_file,
             inner: RefCell::new(inner),
-            asset_mgr,
         }
     }
 
@@ -271,20 +256,20 @@ impl Game {
                 (ZONE_IN1_DIST * (1.0 - factor) + ZONE_IN2_DIST + ZONE_IN3_DIST, 0.0, 0.0)
             };
 
+            cube_info.cube.set_pos(&Vector3::new(cube_info.x, y + CUBE_SIZE / 2.0 + 1.0, cube_info.z + z_base)); // TODO: ts_in/ts_out should be offseted because of CUBE_SIZE / 2.0 + 1.0.
+
             let rot = Quaternion::from_angle_y(Deg(angle));
             cube_info.cube.set_rot(&rot);
-
-            cube_info.cube.set_pos(&Vector3::new(cube_info.x, y + CUBE_SIZE / 2.0 + 1.0, cube_info.z + z_base)); // TODO: ts_in/ts_out should be offseted because of CUBE_SIZE / 2.0 + 1.0.
         }
     }
 
     fn update_saber(&self, saber: &Saber, pose_opt: &Option<ScenePose>) {
-        if let Some(pose) = pose_opt {
-            saber.set_visible(true);
+        if let Some(pose) = pose_opt && pose.get_render() {
+            saber.set_visible(SaberVisibility::HandleRay);
             saber.set_pos(pose.get_pos());
             saber.set_rot(pose.get_rot());
         } else {
-            saber.set_visible(false);
+            saber.set_visible(SaberVisibility::Hidden);
         }
     }
 }
@@ -319,11 +304,31 @@ impl Scene for Game {
         self.update_saber(&self.saber_l, &scene_input.pose_l_opt);
         self.update_saber(&self.saber_r, &scene_input.pose_r_opt);
 
-        // If we are finished, then restart.
-        // TODO: this logic will go away once we have menu system
+        // TODO: Implement pause menu.
+
+        {
+            let mut inner = self.inner.borrow_mut();
+            let mut click = false;
+
+            if let Some(pose_l) = &scene_input.pose_l_opt {
+                click |= pose_l.get_click();
+            }
+
+            if let Some(pose_r) = &scene_input.pose_r_opt {
+                click |= pose_r.get_click();
+            }
+
+            if !inner.prev_click && click {
+                done = true;
+            }
+
+            inner.prev_click = click;
+        }
+
+        // If we are finished, then go to menu.
 
         if done {
-            scene_mgr.load(GameParam::get_demo(Rc::clone(&self.asset_mgr)));
+            scene_mgr.load(MenuParam::new());
         }
     }
 }

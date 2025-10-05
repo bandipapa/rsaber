@@ -3,6 +3,8 @@ use std::iter;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::thread;
 
 use cpal::{BufferSize, Device, SampleFormat, Stream, StreamConfig};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -16,7 +18,7 @@ pub trait AudioFactory {
     type Source: AudioSource + Send + 'static;
     type Handle;
 
-    fn build(self, channels: u16, sample_rate: u32, subr: AudioSubr) -> (Self::Source, Self::Handle);
+    fn source_factory_and_handle(self, channels: u16, sample_rate: u32, subr: AudioSubr) -> (impl FnOnce() -> Self::Source + Send + 'static, Self::Handle);
 }
 
 pub trait AudioSource {
@@ -34,9 +36,11 @@ pub type AudioEngineRc = Rc<AudioEngine>;
 pub struct AudioEngine {
     config: StreamConfig,
     stream: Rc<Stream>,
-    inner_rc: Arc<Mutex<Inner>>,
+    worker_tx: Sender<WorkerMessage>,
     playing: Cell<bool>,
 }
+
+type WorkerMessage = (Arc<AtomicU64>, Box<dyn FnOnce() -> Box<dyn AudioSource + Send + 'static> + Send + 'static>);
 
 struct Inner { // TODO: We have only a single field, keep struct?
     source_infos: Vec<SourceInfo>,
@@ -64,22 +68,31 @@ impl AudioEngine {
         let mut config: StreamConfig = range.with_sample_rate(range.min_sample_rate()).config();
         config.buffer_size = BufferSize::Fixed((config.sample_rate.0 as f32 * LATENCY) as u32); // TODO: hardcoded bufsize, determine it from device capabilities?
 
+        // Construct inner.
+
         let inner = Inner {
             source_infos: Vec::new(),
         };
-        let inner_rc = Arc::new(Mutex::new(inner));
+        let inner_mutex = Arc::new(Mutex::new(inner));
 
-        let stream = Self::build_stream(&device, &config, Arc::clone(&inner_rc));
+        // Setup stream.
+
+        let stream = Self::build_stream(&device, &config, Arc::clone(&inner_mutex));
+
+        // Start worker.
+
+        let (worker_tx, worker_rx) = mpsc::channel();
+        thread::spawn(move || Self::worker_impl(inner_mutex, worker_rx));
 
         Self {
             config,
             stream: Rc::new(stream),
-            inner_rc,
+            worker_tx,
             playing: Cell::new(false),
         }
     }
 
-    fn build_stream(device: &Device, config: &StreamConfig, inner_rc: Arc<Mutex<Inner>>) -> Stream {
+    fn build_stream(device: &Device, config: &StreamConfig, inner_mutex: Arc<Mutex<Inner>>) -> Stream {
         // We don't want to make heap allocation in the mixer thread, so allocate source_buf early.
         // TODO: how can we determine the size of the buffer, since cpal can't guarantee requested
         // buffer size?
@@ -97,7 +110,7 @@ impl AudioEngine {
 
             buf.fill(0.0);
 
-            let mut inner = inner_rc.lock().unwrap(); // TODO: how to avoid blocking in mixer thread?
+            let mut inner = inner_mutex.lock().unwrap(); // TODO: how to avoid blocking in mixer thread?
             let source_infos = &mut inner.source_infos;
             let mut i = 0;
 
@@ -146,15 +159,12 @@ impl AudioEngine {
         let start_pos = Arc::new(AtomicU64::new(INACTIVE));
         let subr = AudioSubr::new(self.config.sample_rate.0, Rc::clone(&self.stream), Arc::clone(&start_pos));
 
-        let (source, handle) = factory.build(CHANNELS, self.config.sample_rate.0, subr);
+        // Execute source_factory on the worker thread to avoid blocking of
+        // the render thread. For example: before playing, the factory function is
+        // doing some buffering.
 
-        let source_info = SourceInfo {
-            start_pos,
-            source: Box::new(source),
-        };
-
-        let mut inner = self.inner_rc.lock().unwrap();
-        inner.source_infos.push(source_info);
+        let (source_factory, handle) = factory.source_factory_and_handle(CHANNELS, self.config.sample_rate.0, subr);
+        self.worker_tx.send((start_pos, Box::new(move || Box::new(source_factory())))).expect("Unable to send");
 
         handle
     }
@@ -170,6 +180,23 @@ impl AudioEngine {
         if self.playing.get() {
             self.stream.pause().expect("Unable to pause stream");
             self.playing.set(false);
+        }
+    }
+
+    fn worker_impl(inner_mutex: Arc<Mutex<Inner>>, worker_rx: Receiver<WorkerMessage>) {
+        loop {
+            let (start_pos, source_factory) = match worker_rx.recv() {
+                Ok(msg) => msg,
+                Err(_) => break,
+            };
+
+            let source_info = SourceInfo {
+                start_pos,
+                source: source_factory(),
+            };
+
+            let mut inner = inner_mutex.lock().unwrap();
+            inner.source_infos.push(source_info);
         }
     }
 }

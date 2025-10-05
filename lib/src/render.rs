@@ -4,12 +4,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicI32, Ordering};
 
 use bytemuck::{Pod, Zeroable};
-use wgpu::{BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingType, Buffer, BufferBindingType, BufferDescriptor, BufferSize, BufferUsages, Color, CommandEncoderDescriptor, LoadOp, MapMode, Operations, PipelineLayoutDescriptor, QuerySet, QuerySetDescriptor, QueryType, RenderPassColorAttachment, RenderPassDepthStencilAttachment, RenderPassDescriptor, RenderPassTimestampWrites, ShaderStages, StoreOp};
+use wgpu::{BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingType, Buffer, BufferBindingType, BufferDescriptor, BufferSize, BufferUsages, Color, CommandEncoderDescriptor, LoadOp, MapMode, Operations, QuerySet, QuerySetDescriptor, QueryType, RenderPassColorAttachment, RenderPassDepthStencilAttachment, RenderPassDescriptor, RenderPassTimestampWrites, ShaderStages, StoreOp};
 
-use crate::AssetManagerRc;
+use crate::asset::AssetManagerRc;
 use crate::audio::AudioEngineRc;
 use crate::output::{Frame, OutputInfoRc, ViewMat};
-use crate::scene::{GameParam, SceneInput, SceneManager};
+use crate::scene::{MenuParam, SceneInput, SceneManager};
 
 const QUERY_COUNT: u32 = 2;
 const QUERY_SIZE: u64 = QUERY_COUNT as u64 * mem::size_of::<u64>() as u64; // TODO: use constant wgpu::QUERY_SIZE.
@@ -33,7 +33,7 @@ pub struct Render {
     render_time: Arc<AtomicI32>, // [us]
     uni_size: u64,
     uni_buf: Buffer,
-    bg: BindGroup,
+    uni_bg: BindGroup,
     scene_mgr: SceneManager,
 }
 
@@ -76,7 +76,7 @@ impl Render {
             mapped_at_creation: false,
         });
 
-        let bg_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+        let uni_bg_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
             label: None,
             entries: &[
                 BindGroupLayoutEntry {
@@ -92,9 +92,9 @@ impl Render {
             ]
         });
 
-        let bg: BindGroup = device.create_bind_group(&BindGroupDescriptor {
+        let uni_bg: BindGroup = device.create_bind_group(&BindGroupDescriptor {
             label: None,
-            layout: &bg_layout,
+            layout: &uni_bg_layout,
             entries: &[
                 BindGroupEntry {
                     binding: 0, // See vertex/fragment shader->@binding().
@@ -103,20 +103,10 @@ impl Render {
             ]
         });
 
-        // Create pipeline layout.
-
-        let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
-            label: None,
-            bind_group_layouts: &[
-                &bg_layout, // See vertex/fragment shader->@group().
-            ],
-            push_constant_ranges: &[],
-        });
-
         // Create scene manager and load start scene.
 
-        let scene_mgr = SceneManager::new(Rc::clone(&asset_mgr), Rc::clone(&output_info), pipeline_layout, audio_engine);
-        scene_mgr.load(GameParam::get_demo(asset_mgr));
+        let scene_mgr = SceneManager::new(Arc::clone(&asset_mgr), Rc::clone(&output_info), uni_bg_layout, audio_engine);
+        scene_mgr.load(MenuParam::new());
 
         Self {
             output_info,
@@ -126,7 +116,7 @@ impl Render {
             render_time,
             uni_size,
             uni_buf,
-            bg,
+            uni_bg,
             scene_mgr,
         }
     }
@@ -201,7 +191,7 @@ impl Render {
                 occlusion_query_set: None,
             });
 
-            render_pass.set_bind_group(0, &self.bg, &[]); // See PipelineLayoutDescriptor->bind_group_layouts.
+            render_pass.set_bind_group(0, &self.uni_bg, &[]); // See PipelineLayoutDescriptor->bind_group_layouts.
             self.scene_mgr.render(scene_input, &mut render_pass);
         }
 
@@ -223,7 +213,7 @@ impl Render {
             let render_time = Arc::clone(&self.render_time);
             let ts_period = self.output_info.get_queue().get_timestamp_period();
 
-            self.query_result_buf.map_async(MapMode::Read, 0..QUERY_SIZE, move |r| {
+            self.query_result_buf.map_async(MapMode::Read, 0..QUERY_SIZE, move |r| { // TODO: use map_buffer_on_submit?
                 r.expect("Unable to map buffer");
 
                 let t;

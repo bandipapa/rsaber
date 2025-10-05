@@ -1,0 +1,122 @@
+import "font/NotoSans-Regular.ttf";
+
+import { AboutSlint, Button } from "std-widgets.slint";
+
+global Const {
+    out property<string> default-font-family: "Noto Sans";
+    out property<length> default-font-size: 20px;
+    out property<color> border-color: #a0a0a0;
+    out property<color> title-color: #000000;
+    out property<length> title-height: 30px;
+    out property<color> content-background: #ffffff;
+    out property<length> border-width: 7px;
+}
+
+export component SearchWindow inherits Window {
+    default-font-family: Const.default-font-family;
+    default-font-size: Const.default-font-size;
+    background: Const.border-color;
+
+    callback start();
+
+    VerticalLayout { 
+        Text {
+            text: "Main";
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            color: Const.title-color;
+            height: Const.title-height;
+        }
+
+        Rectangle {
+            background: Const.content-background;
+            border-color: Const.border-color;
+            border-width: Const.border-width;
+            border-radius: 2 * Const.border-width;
+
+            Button {
+                text: "Start Demo Level";
+                        
+                clicked => {
+                    root.start();
+                }
+            }        
+        }
+    }
+}
+
+export component AboutWindow inherits Window {
+    default-font-family: Const.default-font-family;
+    default-font-size: Const.default-font-size;
+    background: Const.border-color;
+
+    VerticalLayout { 
+        Text {
+            text: "About";
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            color: Const.title-color;
+            height: Const.title-height;
+        }
+
+        rect := Rectangle {
+            background: Const.content-background;
+            border-color: Const.border-color;
+            border-width: Const.border-width;
+            border-radius: 2 * Const.border-width;
+
+            Image {
+                width: rect.width - 2 * rect.border-width;
+                source: @image-url("image/logo.png");
+            }
+        }
+    }
+}
+
+export component PoweredByWindow inherits Window {
+    default-font-family: Const.default-font-family;
+    default-font-size: Const.default-font-size;
+    background: Const.border-color;
+
+    VerticalLayout { 
+        Text {
+            text: "Powered By";
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            color: Const.title-color;
+            height: Const.title-height;
+        }
+
+        rect := Rectangle {
+            background: Const.content-background;
+            border-color: Const.border-color;
+            border-width: Const.border-width;
+            border-radius: 2 * Const.border-width;
+
+            GridLayout { 
+                width: rect.width - 2 * rect.border-width;
+                padding: Const.border-width;
+                spacing: Const.border-width;
+
+                Row {
+                    Image {
+                        source: @image-url("image/rust.svg");
+                    }
+
+                    Image {
+                        source: @image-url("image/wgpu.png");
+                    }
+                }
+
+                Row {
+                    Image {
+                        source: @image-url("image/openxr.svg");
+                    }
+
+                    AboutSlint {
+                    }
+                }
+            }
+        }
+    }
+}

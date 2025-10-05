@@ -15,8 +15,15 @@ categories.workspace = true
 
 android-activity = {version = "0.6.0", features = ["native-activity"]}
 openxr = {version = "0.19.0", features = ["loaded"]}
+slint = {version = "1.14.1", default-features = false, features = ["backend-android-activity-06"]} # TODO: If this is missing, then slint build fails, why?
 
-rsaber_lib = {path = "../lib", version = "0.1.0", features = ["xr"]}
+rsaber_lib = {path = "../lib", version = "0.2.0", features = ["xr"]}
+
+[build-dependencies]
+
+reqwest = {version = "0.12.23", features = ["blocking"]} # TODO: lots of deps, use simpler library?
+sha2 = "0.10.9"
+zip = "6.0.0"
 
 [lib]
 
@@ -25,7 +32,6 @@ crate-type = ["cdylib"]
 [package.metadata.android]
 
 package = "com.bandipapa.rsaber"
-assets = "../asset"
 runtime_libs = "lib"
 
 # See https://developer.oculus.com/documentation/native/android/mobile-native-manifest/

@@ -6,14 +6,14 @@
 
 use std::fmt;
 use std::ops::Range;
-use std::rc::Rc;
 use std::result::{Result as result_Result};
+use std::sync::Arc;
 
 use serde::{Deserialize, Deserializer};
 use serde::de::{Error as de_Error, Visitor};
 use serde_json::{Error as json_Error, Value};
 
-use crate::AssetManagerRc;
+use crate::asset::AssetManagerRc;
 use crate::model::Color;
 
 type Result<T> = result_Result<T, Error>;
@@ -99,7 +99,7 @@ impl SongInfo {
     pub fn get_bpm_info(&self) -> Result<BPMInfo> {
         Ok(match &self.bpm_selector {
             BPMSelector::Fixed(bpm) => BPMInfo::Fixed(*bpm),
-            BPMSelector::Mapped(filename) => BPMInfo::Mapped(BPMMap::load(Rc::clone(&self.asset_mgr), &self.dir, filename)?),
+            BPMSelector::Mapped(filename) => BPMInfo::Mapped(BPMMap::load(Arc::clone(&self.asset_mgr), &self.dir, filename)?),
         })
     }
 
@@ -146,8 +146,8 @@ impl ColorScheme {
 
 impl Default for ColorScheme {
     fn default() -> Self {
-        let color_l = Color([0.7843137, 0.07843138, 0.07843138]); // See https://bsmg.wiki/mapping/lighting-defaults.html#_1-19-0-colors .
-        let color_r = Color([0.1568627, 0.5568627, 0.8235294]);
+        let color_l = Color::from_srgb_float(0.7843137, 0.07843138, 0.07843138); // See https://bsmg.wiki/mapping/lighting-defaults.html#_1-19-0-colors .
+        let color_r = Color::from_srgb_float(0.1568627, 0.5568627, 0.8235294);
 
         ColorScheme::new(color_l, color_r)
     }
@@ -182,7 +182,7 @@ impl BeatmapInfo {
     }
 
     pub fn load(&self) -> Result<Beatmap> {
-        Beatmap::load(Rc::clone(&self.asset_mgr), &self.dir, &self.filename)
+        Beatmap::load(Arc::clone(&self.asset_mgr), &self.dir, &self.filename)
     }
 
     pub fn get_characteristic(&self) -> &str {
@@ -241,7 +241,7 @@ impl SongInfo_V2 {
                 let inner = raw_color_scheme.inner;
                 let color_l = inner.color_l;
                 let color_r = inner.color_r;
-                let color_scheme = ColorScheme::new(Color([color_l.r, color_l.g, color_l.b]), Color([color_r.r, color_r.g, color_r.b]));
+                let color_scheme = ColorScheme::new(Color::from_srgb_float(color_l.r, color_l.g, color_l.b), Color::from_srgb_float(color_r.r, color_r.g, color_r.b));
                 color_schemes.push(color_scheme);
             }
         }
@@ -255,15 +255,15 @@ impl SongInfo_V2 {
 
                 if let Some(custom_data) = raw_beatmap_info.custom_data {
                     if let Some(color) = custom_data.color_l {
-                        def_color_scheme.color_l = Color([color.r, color.g, color.b]);
+                        def_color_scheme.color_l = Color::from_srgb_float(color.r, color.g, color.b);
                     }
                     
                     if let Some(color) = custom_data.color_r {
-                        def_color_scheme.color_r = Color([color.r, color.g, color.b]);
+                        def_color_scheme.color_r = Color::from_srgb_float(color.r, color.g, color.b);
                     }
                 }
 
-                let beatmap_info = BeatmapInfo::new(Rc::clone(&asset_mgr), dir.as_ref(), characteristic.clone(), raw_beatmap_info.difficulty, raw_beatmap_info.color_scheme_index_opt, def_color_scheme, raw_beatmap_info.filename, raw_beatmap_info.notejump_speed, raw_beatmap_info.notejump_beatoffset);
+                let beatmap_info = BeatmapInfo::new(Arc::clone(&asset_mgr), dir.as_ref(), characteristic.clone(), raw_beatmap_info.difficulty, raw_beatmap_info.color_scheme_index_opt, def_color_scheme, raw_beatmap_info.filename, raw_beatmap_info.notejump_speed, raw_beatmap_info.notejump_beatoffset);
                 beatmap_infos.push(beatmap_info);
             }
         }
@@ -348,7 +348,7 @@ impl SongInfo_V4 {
 
         let mut beatmap_infos = Vec::new();
         for raw_beatmap_info in self.beatmap_infos {
-            let beatmap_info = BeatmapInfo::new(Rc::clone(&asset_mgr), dir.as_ref(), raw_beatmap_info.characteristic, raw_beatmap_info.difficulty, raw_beatmap_info.color_scheme_index_opt, ColorScheme::default(), raw_beatmap_info.filename, raw_beatmap_info.notejump_speed, raw_beatmap_info.notejump_beatoffset);
+            let beatmap_info = BeatmapInfo::new(Arc::clone(&asset_mgr), dir.as_ref(), raw_beatmap_info.characteristic, raw_beatmap_info.difficulty, raw_beatmap_info.color_scheme_index_opt, ColorScheme::default(), raw_beatmap_info.filename, raw_beatmap_info.notejump_speed, raw_beatmap_info.notejump_beatoffset);
             beatmap_infos.push(beatmap_info);
         }
 
@@ -752,7 +752,7 @@ impl<'de> Visitor<'de> for ColorVisitor {
 
     fn visit_str<E: de_Error>(self, v: &str) -> result_Result<Self::Value, E> {
         let raw_color = u32::from_str_radix(v, 16).map_err(|_| E::custom("invalid color"))?; // TODO: validate: leading +, number of digits, etc.
-        Ok(Color::from_srgb((raw_color >> 24) as u8, (raw_color >> 16) as u8, (raw_color >> 8) as u8))
+        Ok(Color::from_srgb_byte((raw_color >> 24) as u8, (raw_color >> 16) as u8, (raw_color >> 8) as u8))
     } 
 }
 

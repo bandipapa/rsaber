@@ -2,7 +2,7 @@ use std::rc::Rc;
 
 use cfg_if::cfg_if;
 use cgmath::Vector3;
-use wgpu::{Device, Extent3d, Features, Queue, Texture, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages, TextureView};
+use wgpu::{Device, Extent3d, Features, Limits, Queue, Texture, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages, TextureView};
 
 cfg_if! {
     if #[cfg(feature = "window")] {
@@ -98,7 +98,17 @@ pub trait Frame {
 }
 
 fn get_default_features() -> Features {
-    Features::default() | Features::TIMESTAMP_QUERY
+    Features::default() | Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING | Features::TEXTURE_BINDING_ARRAY | Features::TIMESTAMP_QUERY
+}
+
+fn get_default_limits() -> Limits {
+    // These are arbitrary limits, change them if needed.
+    
+    Limits {
+        max_binding_array_elements_per_shader_stage: 8,
+        max_binding_array_sampler_elements_per_shader_stage: 8,
+        ..Default::default()
+    }
 }
 
 fn create_texture(device: &Device, width: u32, height: u32, layers: u32, sample_count: u32, format: TextureFormat) -> Texture {

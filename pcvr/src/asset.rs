@@ -1,1 +1,0 @@
-../../pc/src/asset.rs

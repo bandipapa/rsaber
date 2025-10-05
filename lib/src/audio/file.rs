@@ -10,9 +10,9 @@ use symphonia::core::audio::SampleBuffer;
 use symphonia::core::errors::Error as symphonia_Error;
 use symphonia::core::io::{MediaSourceStream, ReadOnlySource};
 
-use crate::AssetManagerRc;
+use crate::asset::AssetManagerRc;
 use crate::audio::{AudioFactory, AudioSource, AudioSourceState, AudioSubr};
-use crate::circbuf;
+use crate::circbuf::{self, Receiver};
 
 const BUF_LEN: u16 = 3; // [s]
 const RATE_CONV_CHUNK: usize = 1024;
@@ -30,35 +30,17 @@ impl AudioFileFactory {
         }
     }
 
-    fn create_rate_conv_buf(channels: usize, len: usize) -> Box<[Box<[f32]>]> {
-        Box::from_iter(iter::repeat_n(Box::from_iter(iter::repeat_n(0.0, len)), channels))
-    }
-}
-
-#[atomic_enum]
-enum State {
-    Inactive,
-    Playing,
-    Done,
-}
-
-struct DecodedBuf {
-    buf: SampleBuffer::<f32>,
-    i: usize,
-    len: usize,
-}
-
-impl AudioFactory for AudioFileFactory {
-    type Source = AudioFileSource;
-    type Handle = AudioFileHandle;
-
-    fn build(self, channels: u16, sample_rate: u32, subr: AudioSubr) -> (Self::Source, Self::Handle) {
+    fn build(self, channels: u16, sample_rate: u32, state: Arc<AtomicState>) -> AudioFileSource {
         let channels = channels as usize;
 
-        // Open audio file.
-        // TODO: if we move opening to the decoder thread (on android), then we can get rid of complexity in asset.rs.
+        // Setup circular buffer.
 
-        let f = self.asset_mgr.open_thr(&self.name);
+        let len = channels * sample_rate as usize * BUF_LEN as usize;
+        let (sender, receiver) = circbuf::circbuf::<f32>(len);
+
+        // Open audio file.
+
+        let f = self.asset_mgr.open(&self.name);
         let src = ReadOnlySource::new(f);
         let mss = MediaSourceStream::new(Box::new(src), Default::default());
         let probe = symphonia::default::get_probe().format(&Default::default(), mss, &Default::default(), &Default::default()).expect("Unable to probe");
@@ -71,11 +53,6 @@ impl AudioFactory for AudioFileFactory {
         let codec_params = decoder.codec_params();
         assert!(codec_params.channels.unwrap().count() == channels);
         let decoder_sample_rate = codec_params.sample_rate.unwrap();
-
-        // Setup circular buffer.
-
-        let len = channels * sample_rate as usize * BUF_LEN as usize;
-        let (sender, receiver) = circbuf::circbuf::<f32>(len);
 
         // Determine, if we need rate conversion.
 
@@ -255,24 +232,52 @@ impl AudioFactory for AudioFileFactory {
 
         receiver.wait_full();
 
-        // Prepare return value.
+        AudioFileSource::new(state, receiver)
+    }
 
+    fn create_rate_conv_buf(channels: usize, len: usize) -> Box<[Box<[f32]>]> {
+        Box::from_iter(iter::repeat_n(Box::from_iter(iter::repeat_n(0.0, len)), channels))
+    }
+}
+
+#[atomic_enum]
+enum State {
+    Inactive,
+    Playing,
+    Done,
+}
+
+struct DecodedBuf {
+    buf: SampleBuffer::<f32>,
+    i: usize,
+    len: usize,
+}
+
+impl AudioFactory for AudioFileFactory {
+    type Source = AudioFileSource;
+    type Handle = AudioFileHandle;
+
+    fn source_factory_and_handle(self, channels: u16, sample_rate: u32, subr: AudioSubr) -> (impl FnOnce() -> Self::Source + Send + 'static, Self::Handle) {
         let state = Arc::new(AtomicState::new(State::Inactive));
 
-        let source = AudioFileSource::new(Arc::clone(&state), receiver);
+        let source_factory = {
+            let state = Arc::clone(&state);
+            move || self.build(channels, sample_rate, state)
+        };
+
         let handle = AudioFileHandle::new(state, subr);
 
-        (source, handle)
+        (source_factory, handle)
     }
 }
 
 pub struct AudioFileSource {
     state: Arc<AtomicState>,
-    receiver: circbuf::Receiver<f32>,
+    receiver: Receiver<f32>,
 }
 
 impl AudioFileSource {
-    fn new(state: Arc<AtomicState>, receiver: circbuf::Receiver<f32>) -> Self {
+    fn new(state: Arc<AtomicState>, receiver: Receiver<f32>) -> Self {
         Self {
             state,
             receiver,

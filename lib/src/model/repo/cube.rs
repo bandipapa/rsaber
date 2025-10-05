@@ -4,8 +4,9 @@ use std::cell::RefCell;
 use cgmath::{Matrix4, Quaternion, Vector3};
 use wgpu::Device;
 
-use crate::AssetManagerRc;
-use crate::model::{Color, InstPhongColor, InstShaderType, Mesh, Model, ModelFactory, ModelHandle, Obj, PhongParam};
+use crate::asset::AssetManagerRc;
+use crate::model::{Color, InstPhongColorBuf, InstShaderImplType, InstShaderType, Mesh, Model, ModelFactory, ModelHandle, Obj, PhongParam};
+use crate::ui::UIManagerRc;
 
 pub enum CubeSymbol {
     Arrow,
@@ -47,7 +48,7 @@ impl ModelFactory for CubeParam {
         ])
     }
 
-    fn create(self, handle: ModelHandle) -> Self::Model {
+    fn create(self, handle: ModelHandle, _device: &Device, _inst_sh_impls: &mut [InstShaderImplType], _ui_manager: UIManagerRc) -> Self::Model {
         Cube::new(self, handle)
     }
 }
@@ -97,7 +98,7 @@ impl Cube {
 }
 
 impl Model for Cube {
-    fn fill_phong_color(&self, inst_index: u32, inst_sh_buf: &mut InstPhongColor) {
+    fn fill_phong_color(&self, inst_index: u32, inst_sh_buf: &mut InstPhongColorBuf) {
         let (color, phong_param) = match inst_index {
             0 => (&self.param.body_color, &self.param.body_phong_param),
             1 | 2 => (&self.param.symbol_color, &self.param.symbol_phong_param),

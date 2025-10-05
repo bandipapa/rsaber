@@ -14,7 +14,7 @@ use android_activity::AndroidApp;
 
 use crate::{APP_NAME, APP_VERSION_MAJOR, APP_VERSION_MINOR, APP_VERSION_PATCH, Main};
 use crate::scene::{SceneInput, ScenePose};
-use crate::output::{DEPTH_FORMAT, NEAR_Z, FAR_Z, Frame, OutputInfo, ViewMat, create_texture, get_default_features};
+use crate::output::{DEPTH_FORMAT, NEAR_Z, FAR_Z, Frame, OutputInfo, ViewMat, create_texture, get_default_features, get_default_limits};
 
 type OutputViewMat = [ViewMat; 2];
 
@@ -47,6 +47,8 @@ pub struct XROutput {
     xr_action_set: openxr::ActionSet,
     xr_left_space: openxr::Space,
     xr_right_space: openxr::Space,
+    xr_left_click: openxr::Action<bool>,
+    xr_right_click: openxr::Action<bool>,
     xr_inst: openxr::Instance,
 }
 
@@ -201,10 +203,13 @@ impl XROutput {
             android_sdk_version = AndroidApp::sdk_version().try_into().unwrap();
         }
 
-        // Dummy closure is created to hold drop_guard_clone.
+        // Dummy closure is created to hold drop_guard.
 
-        let drop_guard_clone = Arc::clone(&drop_guard);
-        let wgpu_hal_inst = unsafe { wgpu::hal::vulkan::Instance::from_raw(vk_entry, vk_inst.clone(), vk_version, android_sdk_version, None, wgpu_hal_exts, wgpu_hal_flags, Default::default(), false, Some(Box::new(move || { let _ = Arc::strong_count(&drop_guard_clone); }))) }.expect("wgpu from_raw() failed");
+        let drop_callback: Option<wgpu::hal::DropCallback> = {
+            let drop_guard = Arc::clone(&drop_guard);
+            Some(Box::new(move || { let _ = Arc::strong_count(&drop_guard); }))
+        };
+        let wgpu_hal_inst = unsafe { wgpu::hal::vulkan::Instance::from_raw(vk_entry, vk_inst.clone(), vk_version, android_sdk_version, None, wgpu_hal_exts, wgpu_hal_flags, Default::default(), false, drop_callback) }.expect("wgpu from_raw() failed");
         let wgpu_hal_adapter = wgpu_hal_inst.expose_adapter(vk_phys_dev).expect("wgpu expose_adapter() failed");
 
         // Create Vulkan device:
@@ -278,16 +283,22 @@ impl XROutput {
 
         // Create wgpu device.
 
-        // Dummy closure is created to hold drop_guard_clone.
+        // Dummy closure is created to hold drop_guard.
 
-        let drop_guard_clone = Arc::clone(&drop_guard);
-        let wgpu_hal_dev = unsafe { wgpu_hal_adapter.adapter.device_from_raw(vk_dev.clone(), Some(Box::new(move || { let _ = Arc::strong_count(&drop_guard_clone); })), &wgpu_phys_exts, wgpu_features, &Default::default(), vk_queue_family_index, 0) }.expect("wgpu device_from_raw() failed");
+        let drop_callback: Option<wgpu::hal::DropCallback> = {
+            let drop_guard = Arc::clone(&drop_guard);
+            Some(Box::new(move || { let _ = Arc::strong_count(&drop_guard); }))
+        };
+        let wgpu_hal_dev = unsafe { wgpu_hal_adapter.adapter.device_from_raw(vk_dev.clone(), drop_callback, &wgpu_phys_exts, wgpu_features, &Default::default(), vk_queue_family_index, 0) }.expect("wgpu device_from_raw() failed");
         
         let wgpu_inst = unsafe { Instance::from_hal::<wgpu::hal::vulkan::Api>(wgpu_hal_inst) };
         let wgpu_adapter = unsafe { wgpu_inst.create_adapter_from_hal(wgpu_hal_adapter) };
 
+        let wgpu_limits = get_default_limits();
+
         let device_desc = DeviceDescriptor {
             required_features: wgpu_features,
+            required_limits: wgpu_limits,
             ..Default::default()
         };
         let (device, queue) = unsafe { wgpu_adapter.create_device_from_hal(wgpu_hal_dev, &device_desc) }.expect("wgpu create_device_from_hal() failed");
@@ -395,9 +406,10 @@ impl XROutput {
 
         let xr_action_set = xr_inst.create_action_set("input", "Input", 0).expect("OpenXR create_action_set() failed");
 
-        // TODO: do we need to test for action.is_active()?
         let xr_left_action = xr_action_set.create_action::<openxr::Posef>("left_hand", "Left Hand", &[]).expect("OpenXR create_action() failed");
         let xr_right_action = xr_action_set.create_action::<openxr::Posef>("right_hand", "Right Hand", &[]).expect("OpenXR create_action() failed");
+        let xr_left_click = xr_action_set.create_action::<bool>("left_click", "Left Click", &[]).expect("OpenXR create_action() failed");
+        let xr_right_click = xr_action_set.create_action::<bool>("right_click", "Right Click", &[]).expect("OpenXR create_action() failed");
 
         xr_inst.suggest_interaction_profile_bindings(
             xr_inst.string_to_path("/interaction_profiles/khr/simple_controller").expect("OpenXR string_to_path() failed"),
@@ -410,6 +422,14 @@ impl XROutput {
                     &xr_right_action,
                     xr_inst.string_to_path("/user/hand/right/input/aim/pose").expect("OpenXR string_to_path() failed"),
                 ),
+                openxr::Binding::new(
+                    &xr_left_click,
+                    xr_inst.string_to_path("/user/hand/left/input/select/click").expect("OpenXR string_to_path() failed"),
+                ),
+                openxr::Binding::new(
+                    &xr_right_click,
+                    xr_inst.string_to_path("/user/hand/right/input/select/click").expect("OpenXR string_to_path() failed"),
+                )
             ]).expect("OpenXR suggest_interaction_profile_bindings() failed");
 
         xr_session.attach_action_sets(&[&xr_action_set]).expect("OpenXR attach_action_sets() failed");
@@ -439,6 +459,8 @@ impl XROutput {
             xr_action_set,
             xr_left_space,
             xr_right_space,
+            xr_left_click,
+            xr_right_click,
             xr_inst,
         }
     }
@@ -543,13 +565,17 @@ impl XROutput {
 
         self.xr_session.sync_actions(&[(&self.xr_action_set).into()]).expect("OpenXR sync_actions() failed");
 
+        let focused = matches!(inner.state, State::Focused);
+
         let left_location = self.xr_left_space.locate(&self.xr_space, display_t).expect("OpenXR locate() failed");
         let right_location = self.xr_right_space.locate(&self.xr_space, display_t).expect("OpenXR locate() failed");
 
-        let focused = matches!(inner.state, State::Focused);
-        let pose_l_opt = self.calc_pose(focused, &left_location);
-        let pose_r_opt = self.calc_pose(focused, &right_location);
-                
+        let click_state_l = self.xr_left_click.state(&self.xr_session, openxr::Path::NULL).expect("OpenXR state() failed");
+        let click_state_r = self.xr_right_click.state(&self.xr_session, openxr::Path::NULL).expect("OpenXR state() failed");
+
+        let pose_l_opt = self.calc_pose(focused, &left_location, &click_state_l);
+        let pose_r_opt = self.calc_pose(focused, &right_location, &click_state_r);
+        
         let scene_input = SceneInput {
             pose_l_opt,
             pose_r_opt,
@@ -589,15 +615,15 @@ impl XROutput {
         Begin::Frame((frame, scene_input))
     }
 
-    fn calc_pose(&self, focused: bool, location: &openxr::SpaceLocation) -> Option<ScenePose> {
-        if focused && location.location_flags.contains(openxr::SpaceLocationFlags::POSITION_VALID | openxr::SpaceLocationFlags::ORIENTATION_VALID) {
-            let offset = Quaternion::from_angle_x(Deg(-45.0)); // TODO: is this valid for all devices?
+    fn calc_pose(&self, focused: bool, location: &openxr::SpaceLocation, click_state: &openxr::ActionState<bool>) -> Option<ScenePose> {
+        if focused && location.location_flags.contains(openxr::SpaceLocationFlags::POSITION_VALID | openxr::SpaceLocationFlags::ORIENTATION_VALID) && click_state.is_active {
+            let offset = Quaternion::from_angle_x(Deg(-45.0));
 
             let pos = location.pose.position;
             let rot = location.pose.orientation;
             let my_rot = Quaternion::new(rot.w, rot.x, -rot.z, rot.y) * offset;
 
-            Some(ScenePose::new(&Vector3::new(pos.x, -pos.z, pos.y), &my_rot))
+            Some(ScenePose::new(&Vector3::new(pos.x, -pos.z, pos.y), &my_rot, click_state.current_state, true))
         } else {
             None
         }

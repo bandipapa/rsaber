@@ -13,7 +13,7 @@ use std::iter;
 use wgpu::{BufferUsages, Device};
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
 
-use crate::AssetManagerRc;
+use crate::asset::AssetManagerRc;
 use crate::model::{InstShaderType, Mesh, PrimitiveStateType, Submesh, VertexPosNormal, VertexShaderType};
 
 type MeshIndex = u32;
@@ -21,7 +21,7 @@ type MeshIndex = u32;
 pub struct Obj;
 
 impl Obj {
-    pub fn open<S: AsRef<str>>(asset_mgr: AssetManagerRc, device: &Device, name: S, submesh_infos: &[(&str, &InstShaderType)]) -> Mesh { // TODO: convert it to func?
+    pub fn open<S: AsRef<str>>(asset_mgr: AssetManagerRc, device: &Device, name: S, submesh_infos: &[(&str, &InstShaderType)]) -> Mesh { // TODO: convert it to func? Embed parsed objs into binary?
         assert!(!submesh_infos.is_empty());
 
         // Parse obj.

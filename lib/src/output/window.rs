@@ -1,11 +1,13 @@
 use std::cell::RefCell;
 
-use cgmath::{Angle, Deg, Matrix4, Point3, Rad, Vector3};
+use cgmath::{Angle, Deg, InnerSpace, Matrix, Matrix3, Matrix4, Point3, Rad, Vector3};
 use wgpu::{CompositeAlphaMode, Device, DeviceDescriptor, Instance, PresentMode, Queue, RequestAdapterOptions, Surface, SurfaceConfiguration, SurfaceError, SurfaceTarget, SurfaceTexture, TextureFormat, TextureFormatFeatureFlags, TextureUsages, TextureView};
 
-use crate::output::{DEPTH_FORMAT, NEAR_Z, FAR_Z, Frame, OutputInfo, ViewMat, create_texture, get_default_features};
+use crate::output::{DEPTH_FORMAT, NEAR_Z, FAR_Z, Frame, OutputInfo, ViewMat, create_texture, get_default_features, get_default_limits};
 
 type OutputViewMat = ViewMat;
+
+const FOVY: Deg<f32> = Deg(45.0);
 
 pub struct WindowOutput {
     device: Device,
@@ -34,8 +36,11 @@ impl WindowOutput {
         let adapter = instance.request_adapter(&adapter_opt).await.expect("Unable to request adapter");
 
         let features = get_default_features();
+        let limits = get_default_limits();
+
         let device_desc = DeviceDescriptor {
             required_features: features,
+            required_limits: limits,
             ..Default::default()
         };
         let (device, queue) = adapter.request_device(&device_desc).await.expect("Unable to request device");
@@ -111,7 +116,7 @@ impl WindowOutput {
         inner.view_obj = Some((multisample_view, depth_view));
     }
 
-    pub fn begin(&self, cam_pos: &Vector3<f32>, cam_rot: &Vector3<f32>) -> WindowBegin {
+    pub fn begin(&self, cam_pos: &Vector3<f32>, cam_dir: &Vector3<f32>) -> WindowBegin {
         let inner = self.inner.borrow();
 
         let (multisample_view, depth_view) = match &inner.view_obj {
@@ -128,12 +133,17 @@ impl WindowOutput {
         // Calculate view matrix.
 
         let surface_config = &inner.surface_config;
+        let aspect = surface_config.width as f32 / surface_config.height as f32;
         
-        let cam_m = Matrix4::look_to_rh(Point3::new(cam_pos.x, cam_pos.y, cam_pos.z), *cam_rot, Vector3::unit_z()); // my -> rh
-        let proj_m = perspective(surface_config.width as f32 / surface_config.height as f32, Deg(45.0), NEAR_Z, FAR_Z); // rh -> lh
+        let cam_m = Matrix4::look_to_rh(Point3::new(cam_pos.x, cam_pos.y, cam_pos.z), *cam_dir, Vector3::unit_z()); // my -> rh
+        let proj_m = perspective(aspect, FOVY, NEAR_Z, FAR_Z); // rh -> lh
         let view_m = proj_m * cam_m;
 
-        let frame = WindowFrame::new(surface_texture, multisample_view, depth_view, view_m.into(), *cam_pos);
+        // Calculate inverse. I hope transpose is faster than cam_m.invert() :).
+
+        let inv_cam_m = Matrix3::from_cols(cam_m.x.truncate(),cam_m.y.truncate(),cam_m.z.truncate()).transpose();
+        
+        let frame = WindowFrame::new(surface_texture, multisample_view, depth_view, view_m.into(), *cam_pos, inv_cam_m, aspect);
         WindowBegin::Frame(frame)
     }
 }
@@ -152,10 +162,12 @@ pub struct WindowFrame {
     depth_view: TextureView,
     view_m: OutputViewMat,
     cam_pos: Vector3<f32>,
+    inv_cam_m: Matrix3<f32>,
+    aspect: f32,
 }
 
 impl WindowFrame {
-    fn new(surface_texture: SurfaceTexture, multisample_view: Option<TextureView>, depth_view: TextureView, view_m: OutputViewMat, cam_pos: Vector3<f32>) -> Self {
+    fn new(surface_texture: SurfaceTexture, multisample_view: Option<TextureView>, depth_view: TextureView, view_m: OutputViewMat, cam_pos: Vector3<f32>, inv_cam_m: Matrix3<f32>, aspect: f32) -> Self {
         let color_view = surface_texture.texture.create_view(&Default::default());
 
         Self {
@@ -165,7 +177,20 @@ impl WindowFrame {
             depth_view,
             view_m,
             cam_pos,
+            inv_cam_m,
+            aspect,
         }
+    }
+
+    pub fn raycast(&self, x: f32, y: f32) -> Vector3<f32> {
+        // For raycasting theory, see:
+        // - https://antongerdelan.net/opengl/raycasting.html
+        // - https://www.youtube.com/watch?v=lj5hx6pa_jE
+
+        let tan_half_fovy = (FOVY / 2.0).tan();
+
+        let dir = self.inv_cam_m * Vector3::new(x * self.aspect * tan_half_fovy, y * tan_half_fovy, -1.0);
+        dir.normalize()
     }
 }
 

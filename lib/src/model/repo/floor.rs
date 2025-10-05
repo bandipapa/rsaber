@@ -4,8 +4,9 @@ use cgmath::{Matrix4, Vector3};
 use wgpu::{BufferUsages, Device};
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
 
-use crate::AssetManagerRc;
-use crate::model::{Color, InstGrid, InstShaderType, Mesh, Model, ModelFactory, ModelHandle, PrimitiveStateType, Submesh, VertexPos, VertexShaderType};
+use crate::asset::AssetManagerRc;
+use crate::model::{Color, InstGridBuf, InstShaderImplType, InstShaderType, Mesh, Model, ModelFactory, ModelHandle, PrimitiveStateType, Submesh, VertexPos, VertexShaderType};
+use crate::ui::UIManagerRc;
 
 const RADIUS: f32 = 15.0; // TODO: make it adjustable via FloorParam?
 
@@ -48,7 +49,7 @@ impl ModelFactory for FloorParam {
         indexes.push(3);
         indexes.push(2);
 
-        let quad_submesh = Submesh::new(0, indexes.len() as u32, 0, PrimitiveStateType::TriangleList, InstShaderType::Grid); // 0
+        let submesh = Submesh::new(0, indexes.len() as u32, 0, PrimitiveStateType::TriangleList, InstShaderType::Grid); // 0
 
         // Create buffers.
 
@@ -64,12 +65,12 @@ impl ModelFactory for FloorParam {
             usage: BufferUsages::INDEX,
         });
 
-        let submeshes = Box::from([quad_submesh]);
+        let submeshes = Box::from([submesh]);
 
         Mesh::new(vertex_buf, index_buf, VertexShaderType::Pos, submeshes)
     }
 
-    fn create(self, handle: ModelHandle) -> Self::Model {
+    fn create(self, handle: ModelHandle, _device: &Device, _inst_sh_impls: &mut [InstShaderImplType], _ui_manager: UIManagerRc) -> Self::Model {
         Floor::new(self, handle)
     }
 }
@@ -105,7 +106,7 @@ impl Floor {
 }
 
 impl Model for Floor {
-    fn fill_grid(&self, inst_index: u32, inst_sh_buf: &mut InstGrid) {
+    fn fill_grid(&self, inst_index: u32, inst_sh_buf: &mut InstGridBuf) {
         assert!(inst_index == 0);
 
         let inner = self.inner.borrow();

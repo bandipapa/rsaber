@@ -2,15 +2,13 @@ use std::time::Duration;
 
 use android_activity::{AndroidApp, InputStatus, MainEvent, PollEvent};
 
-mod asset;
-use asset::AssetManager;
-
 use rsaber_lib::Main;
+use rsaber_lib::asset::EmbedAssetManager;
 use rsaber_lib::output::XROutput;
 
 #[unsafe(no_mangle)]
 fn android_main(app: AndroidApp) {
-    let asset_mgr = AssetManager::new(app.clone());
+    let asset_mgr = EmbedAssetManager::new();
 
     let xr_entry = unsafe { openxr::Entry::load() }.expect("Unable to load OpenXR");
     xr_entry.initialize_android_loader().expect("Unable to initialize android loader");

@@ -4,12 +4,14 @@ use std::collections::{HashMap, HashSet};
 use std::iter;
 use std::num::NonZeroU32;
 use std::rc::Rc;
+use std::sync::Arc;
 
-use wgpu::{BlendState, Buffer, BufferDescriptor, BufferSize, BufferUsages, ColorTargetState, ColorWrites, CompareFunction, DepthStencilState, Device, FragmentState, IndexFormat, MultisampleState, PipelineLayout, RenderPass, RenderPipeline, RenderPipelineDescriptor, ShaderModuleDescriptor, ShaderSource, VertexState};
+use wgpu::{BindGroup, BindGroupLayout, BlendState, Buffer, BufferDescriptor, BufferSize, BufferUsages, ColorTargetState, ColorWrites, CompareFunction, DepthStencilState, Device, FragmentState, IndexFormat, MultisampleState, PipelineLayoutDescriptor, RenderPass, RenderPipeline, RenderPipelineDescriptor, ShaderModuleDescriptor, ShaderSource, VertexState};
 
-use crate::AssetManagerRc;
-use crate::model::{InstGrid, InstPhongColor, InstShaderType, InstSimpleColor, Mesh};
+use crate::asset::AssetManagerRc;
+use crate::model::{InstGridBuf, InstPhongColorBuf, InstShaderImplType, InstShaderType, InstSimpleColorBuf, InstWindowBuf, Mesh};
 use crate::output::OutputInfoRc;
+use crate::ui::UIManagerRc;
 
 // Keep render->Uni and modelrender->UNI_TMPL in-sync.
 // TODO: make it model-specific, like vertex/inst shader?
@@ -30,19 +32,23 @@ pub trait ModelFactory {
 
     fn get_name() -> &'static str;
     fn get_mesh(asset_mgr: AssetManagerRc, device: &Device) -> Mesh;
-    fn create(self, handle: ModelHandle) -> Self::Model;
+    fn create(self, handle: ModelHandle, device: &Device, inst_sh_impls: &mut [InstShaderImplType], ui_manager: UIManagerRc) -> Self::Model;
 }
 
 pub trait Model {
-    fn fill_simple_color(&self, _inst_index: u32, _inst_sh_buf: &mut InstSimpleColor) {
+    fn fill_simple_color(&self, _inst_index: u32, _inst_sh_buf: &mut InstSimpleColorBuf) {
         panic!("Method is not implemented");
     }
 
-    fn fill_phong_color(&self, _inst_index: u32, _inst_sh_buf: &mut InstPhongColor) {
+    fn fill_phong_color(&self, _inst_index: u32, _inst_sh_buf: &mut InstPhongColorBuf) {
         panic!("Method is not implemented");
     }
 
-    fn fill_grid(&self, _inst_index: u32, _inst_sh_buf: &mut InstGrid) {
+    fn fill_grid(&self, _inst_index: u32, _inst_sh_buf: &mut InstGridBuf) {
+        panic!("Method is not implemented");
+    }
+
+    fn fill_window(&self, _inst_index: u32, _inst_sh_buf: &mut InstWindowBuf) {
         panic!("Method is not implemented");
     }
 }
@@ -53,20 +59,23 @@ type Visibles = Rc<RefCell<Box<[HashSet<u32>]>>>; // Box[inst_index]->HashSet[mo
 pub struct ModelRegistry {
     asset_mgr: AssetManagerRc,
     output_info: OutputInfoRc,
+    ui_manager: UIManagerRc,
     model_infos: ModelInfos,
 }
 
 struct ModelInfo {
     mesh: Mesh,
+    inst_sh_impls: Box<[InstShaderImplType]>,
     models: Vec<Rc<dyn Model>>, // [model_index]
     visibles: Visibles,
 }
 
 impl ModelRegistry {
-    pub fn new(asset_mgr: AssetManagerRc, output_info: OutputInfoRc) -> Self {
+    pub fn new(asset_mgr: AssetManagerRc, output_info: OutputInfoRc, ui_manager: UIManagerRc) -> Self {
         Self {
             asset_mgr,
             output_info,
+            ui_manager,
             model_infos: HashMap::new(),
         }
     }
@@ -75,12 +84,18 @@ impl ModelRegistry {
         // Models are grouped by name, so we can do instanced rendering,
         // see ModelRenderer->render().
 
+        let device = self.output_info.get_device();
+
         let model_info = self.model_infos.entry(F::get_name().to_string()).or_insert_with(|| {
-            let mesh = F::get_mesh(Rc::clone(&self.asset_mgr), self.output_info.get_device());
-            let visibles = Rc::new(RefCell::new(iter::repeat_with(HashSet::new).take(mesh.get_submeshes().len()).collect()));
+            let mesh = F::get_mesh(Arc::clone(&self.asset_mgr), device);
+            let submeshes = mesh.get_submeshes();
+
+            let inst_sh_impls = submeshes.iter().map(|submesh| submesh.get_inst_sh_type().create_impl()).collect();
+            let visibles = Rc::new(RefCell::new(iter::repeat_with(HashSet::new).take(submeshes.len()).collect()));
 
             ModelInfo {
                 mesh,
+                inst_sh_impls,
                 models: Vec::new(),
                 visibles,
             }
@@ -88,15 +103,15 @@ impl ModelRegistry {
 
         let model_index = model_info.models.len().try_into().unwrap();
         let handle = ModelHandle::new(Rc::clone(&model_info.visibles), model_index);
-        let model = Rc::new(factory.create(handle));
+        let model = Rc::new(factory.create(handle, device, &mut model_info.inst_sh_impls, Rc::clone(&self.ui_manager)));
 
         model_info.models.push(Rc::clone(&model) as Rc<dyn Model>);
 
         model
     }
 
-    pub fn build(self, pipeline_layout: &PipelineLayout) -> ModelRenderer {
-        ModelRenderer::new(Rc::clone(&self.asset_mgr), self.output_info, self.model_infos, pipeline_layout)
+    pub fn build(self, uni_bg_layout: &BindGroupLayout) -> ModelRenderer {
+        ModelRenderer::new(Arc::clone(&self.asset_mgr), self.output_info, self.model_infos, uni_bg_layout)
     }
 }
 
@@ -140,13 +155,15 @@ struct InstShaderInfo {
     inst_size: u64,
     inst_buf: Buffer,
     pipeline: Rc<RenderPipeline>,
+    bg_opt: Option<BindGroup>,
 }
 
 impl ModelRenderer {
-    fn new(asset_mgr: AssetManagerRc, output_info: OutputInfoRc, model_infos: ModelInfos, pipeline_layout: &PipelineLayout) -> Self {
+    fn new(asset_mgr: AssetManagerRc, output_info: OutputInfoRc, model_infos: ModelInfos, uni_bg_layout: &BindGroupLayout) -> Self {
         let device = output_info.get_device();
 
         let mut pipelines = HashMap::new();
+        let mut pipeline_layouts = HashMap::new();
         let mut shaders = HashMap::new();
 
         let view_len = output_info.get_view_len();
@@ -159,7 +176,7 @@ impl ModelRenderer {
             let models = model_info.models.into_boxed_slice();
             let models_len = models.len() as u64;
 
-            let inst_sh_infos = mesh.get_submeshes().iter().map(|submesh| {
+            let inst_sh_infos = mesh.get_submeshes().iter().zip(model_info.inst_sh_impls.iter()).map(|(submesh, inst_sh_impl)| {
                 let inst_sh_type = submesh.get_inst_sh_type();
                 let inst_sh_layout = inst_sh_type.get_layout();                
                 let inst_size = inst_sh_layout.array_stride;
@@ -173,16 +190,48 @@ impl ModelRenderer {
                     mapped_at_creation: false,
                 });
 
+                // Create pipeline layout and bind groups.
+                // TODO: Use fix number for inst_sh_impl->resources->count?, so we don't have to create different pipeline layouts because of different counts.
+                // TODO: Once wgpu has bindless descriptors, then we can simplify this logic.
+
+                let pipeline_layout_key = inst_sh_impl.get_key();
+
+                let (bg_layout_opt, pipeline_layout) = pipeline_layouts.entry(pipeline_layout_key.clone()).or_insert_with(|| {
+                    let mut bg_layouts = Vec::new();
+                    bg_layouts.push(uni_bg_layout);
+
+                    let bg_layout_opt = inst_sh_impl.create_bind_group_layout(device);
+                    if let Some(bg_layout) = &bg_layout_opt {
+                        bg_layouts.push(bg_layout);
+                    }
+
+                    let pipeline_layout = Rc::new(device.create_pipeline_layout(&PipelineLayoutDescriptor {
+                        label: None,
+                        bind_group_layouts: &bg_layouts, // See vertex/fragment shader->@group().
+                        push_constant_ranges: &[],
+                    }));
+
+                    (bg_layout_opt, pipeline_layout)
+                });
+
+                let bg_opt = if let Some(bg_layout) = bg_layout_opt {
+                    let bg = inst_sh_impl.create_bind_group(device, bg_layout);
+                    Some(bg)
+                } else {
+                    None
+                };
+
                 // Lookup pipeline, make sure we don't have duplicated pipelines/shaders.
 
                 let primitive_st_type = submesh.get_primitive_state_type();
 
-                let pipeline = pipelines.entry((vertex_sh_type.clone(), primitive_st_type.clone(), inst_sh_type.clone())).or_insert_with(|| {
+                let pipeline = pipelines.entry((pipeline_layout_key, vertex_sh_type.clone(), inst_sh_type.clone(), primitive_st_type.clone())).or_insert_with(|| {
                     let shader = shaders.entry((vertex_sh_type.clone(), inst_sh_type.clone())).or_insert_with(|| {
                         let name = format!("shader/{}_{}.wgsl", vertex_sh_type.get_name(), inst_sh_type.get_name());
 
                         // Pre-process shaders, so we don't need to duplicate them for single
                         // or multiview (stereo) rendering.
+                        // TODO: Embed compiled shaders into binary (window, xr)?
 
                         let source = asset_mgr.read_file(&name)
                             .replace("#UNI#", &uni)
@@ -239,6 +288,7 @@ impl ModelRenderer {
                     inst_size,
                     inst_buf,
                     pipeline: Rc::clone(pipeline),
+                    bg_opt,
                 }
             }).collect();
 
@@ -250,6 +300,8 @@ impl ModelRenderer {
             }
         }).collect();
 
+        // TODO: Would make sense to display some statistic, e.g. number of pipelines, vertex, index buffers, models, bindgroups, etc.
+
         Self {
             output_info,
             render_infos,
@@ -258,6 +310,8 @@ impl ModelRenderer {
 
     pub fn render(&self, render_pass: &mut RenderPass) {
         let queue = self.output_info.get_queue();
+
+        // TODO: Would make sense to display some statistic, e.g. number of draw calls, etc.
 
         for render_info in &self.render_infos {
             let mesh = &render_info.mesh;
@@ -284,19 +338,24 @@ impl ModelRenderer {
 
                         match submesh.get_inst_sh_type() {
                             InstShaderType::SimpleColor => {
-                                let inst_sh_buf: &mut [InstSimpleColor] = bytemuck::cast_slice_mut(inst_sh_buf);
+                                let inst_sh_buf: &mut [InstSimpleColorBuf] = bytemuck::cast_slice_mut(inst_sh_buf);
                                 let inst_sh_buf = &mut inst_sh_buf[0];
                                 model.fill_simple_color(inst_index, inst_sh_buf);
                             },
                             InstShaderType::PhongColor => {
-                                let inst_sh_buf: &mut [InstPhongColor] = bytemuck::cast_slice_mut(inst_sh_buf);
+                                let inst_sh_buf: &mut [InstPhongColorBuf] = bytemuck::cast_slice_mut(inst_sh_buf);
                                 let inst_sh_buf = &mut inst_sh_buf[0];
                                 model.fill_phong_color(inst_index, inst_sh_buf);
                             },
                             InstShaderType::Grid => {
-                                let inst_sh_buf: &mut [InstGrid] = bytemuck::cast_slice_mut(inst_sh_buf);
+                                let inst_sh_buf: &mut [InstGridBuf] = bytemuck::cast_slice_mut(inst_sh_buf);
                                 let inst_sh_buf = &mut inst_sh_buf[0];
                                 model.fill_grid(inst_index, inst_sh_buf);
+                            },
+                            InstShaderType::Window => {
+                                let inst_sh_buf: &mut [InstWindowBuf] = bytemuck::cast_slice_mut(inst_sh_buf);
+                                let inst_sh_buf = &mut inst_sh_buf[0];
+                                model.fill_window(inst_index, inst_sh_buf);
                             },
                         };
                     }
@@ -309,6 +368,10 @@ impl ModelRenderer {
 
                     render_pass.set_pipeline(&inst_sh_info.pipeline);
                     render_pass.set_vertex_buffer(1, inst_buf.slice(..total_size)); // See VertexState->buffers[1].
+
+                    if let Some(bg) = &inst_sh_info.bg_opt {
+                        render_pass.set_bind_group(1, bg, &[]); // See PipelineLayoutDescriptor->bind_group_layouts.
+                    }
 
                     render_pass.draw_indexed(submesh.get_indices(), submesh.get_base_vertex(), 0..visible_model_indexes_len);
                 }
