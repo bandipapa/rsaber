@@ -5,6 +5,7 @@ use android_activity::{AndroidApp, InputStatus, MainEvent, PollEvent};
 use rsaber_lib::Main;
 use rsaber_lib::asset::EmbedAssetManager;
 use rsaber_lib::output::XROutput;
+use rsaber_lib::util::Stats;
 
 #[unsafe(no_mangle)]
 fn android_main(app: AndroidApp) {
@@ -17,7 +18,8 @@ fn android_main(app: AndroidApp) {
     // TODO: How to build it with cross-compiler?
     
     let output = XROutput::new(xr_entry);
-    let main = Main::new(asset_mgr, output.get_info());
+    let stats = Stats::new("");
+    let main = Main::new(asset_mgr, output.get_info(), stats);
 
     let mut terminate = false;
 

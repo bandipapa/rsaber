@@ -11,8 +11,6 @@ use audio::{AudioEngine, AudioEngineRc};
 
 pub mod circbuf;
 
-mod indexmap;
-
 mod model;
 
 pub mod output;
@@ -28,6 +26,9 @@ mod songinfo;
 
 mod ui;
 
+pub mod util;
+use util::Stats;
+
 #[cfg(test)]
 mod tests;
 
@@ -42,9 +43,9 @@ pub struct Main {
 }
 
 impl Main {
-    pub fn new<A: AssetManagerTrait + Send + Sync + 'static>(asset_mgr: A, output_info: OutputInfo) -> Self {
+    pub fn new<A: AssetManagerTrait + Send + Sync + 'static>(asset_mgr: A, output_info: OutputInfo, stats: Stats) -> Self {
         let audio_engine = Rc::new(AudioEngine::new());
-        let render = Render::new(Arc::new(asset_mgr), Rc::new(output_info), Rc::clone(&audio_engine));
+        let render = Render::new(Arc::new(asset_mgr), Rc::new(output_info), Arc::new(stats), Rc::clone(&audio_engine));
 
         Self {
             audio_engine,

@@ -6,8 +6,8 @@ use reqwest::blocking;
 use sha2::{Digest, Sha256};
 use zip::ZipArchive;
 
-const URL: &str = "https://repo1.maven.org/maven2/org/khronos/openxr/openxr_loader_for_android/1.1.52/openxr_loader_for_android-1.1.52.aar";
-const DIGEST: &str = "0d6ea1fd6720cffde5b1692ed770ad74b856cacb71e3b1c235cbe7688d1cd6f6";
+const URL: &str = "https://repo1.maven.org/maven2/org/khronos/openxr/openxr_loader_for_android/1.1.54/openxr_loader_for_android-1.1.54.aar";
+const DIGEST: &str = "66702fc24475d7a5362688e77444670124c2fa119745d14c2524bcf3eb584834";
 const ARCH: &str = "arm64-v8a";
 const LIB: &str = "libopenxr_loader.so";
 

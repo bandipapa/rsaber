@@ -1,13 +1,14 @@
 use std::cell::RefCell;
 
-use cgmath::{Matrix4, Quaternion, Vector3};
+use cgmath::{InnerSpace, Matrix4, Quaternion, Vector3};
+use slint::ComponentHandle;
 use wgpu::{BufferUsages, Device, Extent3d, FilterMode, SamplerDescriptor, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages};
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
 
 use crate::asset::AssetManagerRc;
 use crate::model::{InstShaderImplType, InstShaderType, InstWindowBuf, Mesh, Model, ModelFactory, ModelHandle, PrimitiveStateType, SamplerId, Submesh, TextureId, VertexPos, VertexShaderType, SABER_DIR};
 use crate::scene::ScenePose;
-use crate::ui::{SlintComponentHandle, UIEvent, UIManagerRc, UIWindow};
+use crate::ui::{SlintComponentHandle, UIEvent, UIManagerRc, UIWindow, UIWindowWeak};
 
 const SIZE: f32 = 0.5;
 
@@ -101,7 +102,7 @@ impl Window {
         let inst_window = if let InstShaderImplType::Window(inst_window) = &mut inst_sh_impls[0] {
             inst_window
         } else {
-            panic!();
+            panic!("Shader mismatch");
         };
 
         let width = param.width;
@@ -165,7 +166,11 @@ impl Window {
         self.inner.borrow_mut().rot = *rot;
     }
 
-    pub fn intersect(&self, pose: &ScenePose) -> Option<(f32, f32, f32)> { // TODO: introduce struct for return type?
+    pub fn as_weak<C: ComponentHandle + 'static>(&self) -> UIWindowWeak<C> {
+        self.ui_window.as_weak()
+    }
+
+    pub fn intersect(&self, pose: &dyn ScenePose) -> Option<(f32, f32, f32)> { // TODO: introduce struct for return type?
         // TODO: Test for window visibility.
         // Calculate line-plane intersection, see https://en.wikipedia.org/wiki/Line%E2%80%93plane_intersection .
 
@@ -173,7 +178,7 @@ impl Window {
 
         // 1) Check if the pose is pointing to the window facing toward us.
 
-        let l = pose.get_rot() * SABER_DIR;
+        let l = pose.get_rot() * SABER_DIR.normalize();
         let n = inner.rot * Vector3::new(0.0, -1.0, 0.0);
 
         let ln_dot = cgmath::dot(l, n);
@@ -198,6 +203,8 @@ impl Window {
         let p = l0 + l * d;
         let p = inner.rot.conjugate() * (p - p0) + Vector3::new(scale_x / 2.0, 0.0, scale_z / 2.0); // p - p0: apply inverse transformation of p0 to p.
         let (p_x, p_z) = (p.x, p.z);
+
+        // 4) Do AABB test.
 
         if (0.0..scale_x).contains(&p_x) && (0.0..scale_z).contains(&p_z) {
             Some((d, p_x / scale_x, 1.0 - p_z / scale_z))

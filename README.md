@@ -2,7 +2,7 @@
 
 ## State
 
-We are really at the beginning. At least, the colored notes are already moving :).
+We are really at the beginning. At least, the colored notes are already moving and there is a basic collision detection logic :).
 
 ## Supported Devices
 
@@ -56,9 +56,6 @@ cargo install rsaber_pc
 rsaber_pc
 ```
 
-You can use keys w-a-s-d to move, z-x to change elevation, r to reset view and arrow keys to rotate camera.
-Interaction with UI controls can be done with mouse.
-
 ### pcvr
 
 Prerequisite:
@@ -85,6 +82,5 @@ rsaber_pcvr
 
 ## TODO
 
-- Saber<->note collision detection
 - Linux port
 - Have the option to dump/read assets from local files (this is for modders who don't want to recompile)

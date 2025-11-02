@@ -9,60 +9,39 @@ use crate::asset::AssetManagerRc;
 use crate::audio::AudioEngineRc;
 use crate::model::{ModelRegistry, ModelRenderer};
 use crate::output::OutputInfoRc;
-use crate::ui::{UIManager, UIManagerRc, UISubr};
+use crate::ui::{UILoop, UIManager, UIManagerRc, UISubr};
+use crate::util::StatsRc;
 
 pub trait SceneFactory {
     type Scene: Scene + 'static;
 
-    fn load(self, asset_mgr: AssetManagerRc, model_reg: &mut ModelRegistry, audio_engine: AudioEngineRc) -> Self::Scene;
+    fn load(self, asset_mgr: AssetManagerRc, model_reg: &mut ModelRegistry, stats: StatsRc, audio_engine: AudioEngineRc, ui_loop: &UILoop) -> Self::Scene; // TODO: Put all these parameters into a struct?
 }
 
 pub trait Scene { // TODO: add lifecycle methods?
     fn update(&self, scene_mgr: &SceneManager, scene_input: &SceneInput);
 }
 
-pub struct SceneInput {
-    pub pose_l_opt: Option<ScenePose>,
-    pub pose_r_opt: Option<ScenePose>,
+pub struct SceneInput<'a> {
+    // As we are using Scene as a trait object, we can't have type parameters
+    // for SceneInput. Therefore, use trait object for ScenePose.
+    
+    pub pose_l_opt: Option<&'a dyn ScenePose>,
+    pub pose_r_opt: Option<&'a dyn ScenePose>,
 }
 
-pub struct ScenePose {
-    pos: Vector3<f32>,
-    rot: Quaternion<f32>,
-    click: bool, // TODO: Is ScenePose the right place?
-    render: bool, // TODO: Is ScenePose the right place?
-}
-
-impl ScenePose {
-    pub fn new(pos: &Vector3<f32>, rot: &Quaternion<f32>, click: bool, render: bool) -> Self {
-        Self {
-            pos: *pos,
-            rot: *rot,
-            click,
-            render,
-        }
-    }
-
-    pub fn get_pos(&self) -> &Vector3<f32> {
-        &self.pos
-    }
-
-    pub fn get_rot(&self) -> &Quaternion<f32> {
-        &self.rot
-    }
-
-    pub fn get_click(&self) -> bool {
-        self.click
-    }
-
-    pub fn get_render(&self) -> bool {
-        self.render
-    }
+pub trait ScenePose {
+    fn get_pos(&self) -> &Vector3<f32>;
+    fn get_rot(&self) -> &Quaternion<f32>;
+    fn get_click(&self) -> bool;
+    fn get_render(&self) -> bool;
+    fn apply_haptic(&self);
 }
 
 pub struct SceneManager {
     asset_mgr: AssetManagerRc,
     output_info: OutputInfoRc,
+    stats: StatsRc,
     uni_bg_layout: BindGroupLayout,
     audio_engine: AudioEngineRc,
     ui_manager: UIManagerRc,
@@ -73,13 +52,14 @@ pub struct SceneManager {
 }
 
 impl SceneManager {
-    pub fn new(asset_mgr: AssetManagerRc, output_info: OutputInfoRc, uni_bg_layout: BindGroupLayout, audio_engine: AudioEngineRc) -> Self {
+    pub fn new(asset_mgr: AssetManagerRc, output_info: OutputInfoRc, stats: StatsRc, uni_bg_layout: BindGroupLayout, audio_engine: AudioEngineRc) -> Self {
         let ui_manager = Rc::new(UIManager::new(output_info.get_queue().clone()));
         let ui_subr = UISubr::new();
 
         Self {
             asset_mgr,
             output_info,
+            stats,
             uni_bg_layout,
             audio_engine,
             ui_manager,
@@ -97,8 +77,8 @@ impl SceneManager {
 
             // TODO: Implement cache, since ModelRegistry/Obj is going to reload/compile assets on scene switch.
             let mut model_reg = ModelRegistry::new(Arc::clone(&self.asset_mgr), Rc::clone(&self.output_info), Rc::clone(&self.ui_manager));
-            let scene = Box::new(factory.load(Arc::clone(&self.asset_mgr), &mut model_reg, Rc::clone(&self.audio_engine))); // TODO: Load next scene: this is going to block the renderloop. Do it on different thread?
-            let model_renderer = model_reg.build(&self.uni_bg_layout);
+            let scene = Box::new(factory.load(Arc::clone(&self.asset_mgr), &mut model_reg, Arc::clone(&self.stats), Rc::clone(&self.audio_engine), self.ui_manager.get_ui_loop())); // TODO: Load next scene: this is going to block the renderloop. Do it on different thread?
+            let model_renderer = model_reg.build(Arc::clone(&self.stats), &self.uni_bg_layout);
 
             let next_scene_info = SceneInfo::new(scene, model_renderer);
             *next_scene_info_opt = Some(next_scene_info);

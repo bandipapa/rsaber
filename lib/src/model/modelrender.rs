@@ -2,7 +2,6 @@ use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::iter;
-use std::num::NonZeroU32;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -12,6 +11,7 @@ use crate::asset::AssetManagerRc;
 use crate::model::{InstGridBuf, InstPhongColorBuf, InstShaderImplType, InstShaderType, InstSimpleColorBuf, InstWindowBuf, Mesh};
 use crate::output::OutputInfoRc;
 use crate::ui::UIManagerRc;
+use crate::util::StatsRc;
 
 // Keep render->Uni and modelrender->UNI_TMPL in-sync.
 // TODO: make it model-specific, like vertex/inst shader?
@@ -110,8 +110,8 @@ impl ModelRegistry {
         model
     }
 
-    pub fn build(self, uni_bg_layout: &BindGroupLayout) -> ModelRenderer {
-        ModelRenderer::new(Arc::clone(&self.asset_mgr), self.output_info, self.model_infos, uni_bg_layout)
+    pub fn build(self, stats: StatsRc, uni_bg_layout: &BindGroupLayout) -> ModelRenderer {
+        ModelRenderer::new(Arc::clone(&self.asset_mgr), self.output_info, stats, self.model_infos, uni_bg_layout)
     }
 }
 
@@ -141,6 +141,7 @@ impl ModelHandle {
 
 pub struct ModelRenderer {
     output_info: OutputInfoRc,
+    stats: StatsRc,
     render_infos: Box<[RenderInfo]>,
 }
 
@@ -159,7 +160,7 @@ struct InstShaderInfo {
 }
 
 impl ModelRenderer {
-    fn new(asset_mgr: AssetManagerRc, output_info: OutputInfoRc, model_infos: ModelInfos, uni_bg_layout: &BindGroupLayout) -> Self {
+    fn new(asset_mgr: AssetManagerRc, output_info: OutputInfoRc, stats: StatsRc, model_infos: ModelInfos, uni_bg_layout: &BindGroupLayout) -> Self {
         let device = output_info.get_device();
 
         let mut pipelines = HashMap::new();
@@ -208,7 +209,7 @@ impl ModelRenderer {
                     let pipeline_layout = Rc::new(device.create_pipeline_layout(&PipelineLayoutDescriptor {
                         label: None,
                         bind_group_layouts: &bg_layouts, // See vertex/fragment shader->@group().
-                        push_constant_ranges: &[],
+                        immediate_size: 0,
                     }));
 
                     (bg_layout_opt, pipeline_layout)
@@ -279,7 +280,7 @@ impl ModelRenderer {
                             mask: !0,
                             alpha_to_coverage_enabled: false,
                         },
-                        multiview: NonZeroU32::new(if view_len == 1 { 0 } else { view_len }),
+                        multiview_mask: output_info.get_view_mask(),
                         cache: None
                     }))
                 });
@@ -300,18 +301,19 @@ impl ModelRenderer {
             }
         }).collect();
 
-        // TODO: Would make sense to display some statistic, e.g. number of pipelines, vertex, index buffers, models, bindgroups, etc.
-
         Self {
             output_info,
+            stats,
             render_infos,
         }
     }
 
     pub fn render(&self, render_pass: &mut RenderPass) {
         let queue = self.output_info.get_queue();
-
-        // TODO: Would make sense to display some statistic, e.g. number of draw calls, etc.
+        
+        let mut stat_draw_calls = 0;
+        let mut stat_inst_num = 0;
+        let mut stat_inst_buf = 0;
 
         for render_info in &self.render_infos {
             let mesh = &render_info.mesh;
@@ -374,8 +376,18 @@ impl ModelRenderer {
                     }
 
                     render_pass.draw_indexed(submesh.get_indices(), submesh.get_base_vertex(), 0..visible_model_indexes_len);
+
+                    stat_draw_calls += 1;
+                    stat_inst_num += visible_model_indexes_len;
+                    stat_inst_buf += total_size as u32;
                 }
             }
         }
+
+        // Update stats.
+
+        self.stats.set_draw_calls(stat_draw_calls);
+        self.stats.set_inst_num(stat_inst_num);
+        self.stats.set_inst_buf(stat_inst_buf);
     }
 }

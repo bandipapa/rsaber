@@ -1,28 +1,35 @@
+use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::iter;
 use std::mem;
 use std::rc::Rc;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::Arc;
 use std::thread;
 
 use bytemuck::{Pod, Zeroable};
-use slint::{ComponentHandle, LogicalPosition, PhysicalSize, PlatformError};
+use oneshot::Sender;
+use slint::{ComponentHandle, LogicalPosition, PhysicalSize, PlatformError, Weak};
 use slint::platform::{self, Platform, PointerEventButton, WindowAdapter, WindowEvent};
 use slint::platform::software_renderer::{MinimalSoftwareWindow, PremultipliedRgbaColor, RepaintBufferType, TargetPixel};
 use wgpu::{Extent3d, Origin3d, Queue, TexelCopyBufferLayout, TexelCopyTextureInfo, Texture, TextureAspect};
 
+use crate::util::MuCo;
+
 pub type UIManagerRc = Rc<UIManager>;
 
 pub struct UIManager {
-    inner_mutex: InnerMutex,
-    cond: CondRc,
+    inner_muco: InnerMuCo,
     next_window_id: Cell<WindowId>,
+    ui_loop: UILoop,
 }
+
+type InnerMuCo = Arc<MuCo<Inner>>;
 
 struct Inner {
     window_ops_opt: Option<Vec<WindowOp>>, // TODO: use queue instead?
     current_event_opt: Option<CurrentEvent>,
+    callbacks_opt: Option<Vec<Box<dyn FnOnce() + Send + 'static>>>,
 }
 
 impl Inner {
@@ -30,9 +37,6 @@ impl Inner {
         self.window_ops_opt.get_or_insert_default()
     }
 }
-
-type InnerMutex = Arc<Mutex<Inner>>;
-type CondRc = Arc<Condvar>;
 
 enum WindowOp {
     Create(WindowOpCreate),
@@ -45,6 +49,7 @@ struct WindowOpCreate {
     height: u32,
     func: Box<dyn FnOnce() -> Box<dyn SlintComponentHandle + 'static> + Send + 'static>,
     texture: Texture,
+    weak_tx: Sender<Box<dyn Any + Send>>,
 }
 
 struct CurrentEvent {
@@ -59,29 +64,29 @@ impl UIManager {
         let inner = Inner {
             window_ops_opt: None,
             current_event_opt: None,
+            callbacks_opt: None,
         };
-        let inner_mutex = Arc::new(Mutex::new(inner));
+        let inner_muco = Arc::new(MuCo::new(inner));
 
-        let cond = Arc::new(Condvar::new());
+        let ui_loop = UILoop::new(Arc::clone(&inner_muco));
 
         thread::spawn({
-            let inner_mutex = Arc::clone(&inner_mutex);
-            let cond = Arc::clone(&cond);
+            let inner_muco = Arc::clone(&inner_muco);
 
             move || {
                 // Spawn thread to run slint event loop, so UI rendering is not going to block
                 // the main render thread.
                 
-                let platform = UIPlatform::new(inner_mutex, cond, queue);
+                let platform = UIPlatform::new(inner_muco, queue);
                 platform::set_platform(Box::new(platform)).expect("Unable to set platform");
                 slint::run_event_loop().expect("Unable to run event loop");
             }
         });
 
         Self {
-            inner_mutex,
-            cond,
+            inner_muco,
             next_window_id: Cell::new(0),
+            ui_loop
         }
     }
 
@@ -91,44 +96,61 @@ impl UIManager {
         let window_id = self.next_window_id.get();
         self.next_window_id.set(window_id + 1);
 
+        let (weak_tx, weak_rx) = oneshot::channel();
+
         let window_op = WindowOp::Create(WindowOpCreate {
             window_id,
             width,
             height,
             func: Box::new(move || Box::new(func())),
             texture,
+            weak_tx,
         });
 
         {
-            let mut inner = self.inner_mutex.lock().unwrap();
+            let mut inner = self.inner_muco.mutex.lock().unwrap();
 
             let window_ops = inner.window_ops();
             window_ops.push(window_op);
 
-            self.cond.notify_all();
+            self.inner_muco.cond.notify_all();
         }
 
-        UIWindow::new(Arc::clone(&self.inner_mutex), Arc::clone(&self.cond), window_id)
+        let weak = weak_rx.recv().expect("Unable to receive");
+
+        UIWindow::new(Arc::clone(&self.inner_muco), window_id, weak)
+    }
+
+    pub fn get_ui_loop(&self) -> &UILoop {
+        &self.ui_loop
     }
 }
 
 pub struct UIWindow {
-    inner_mutex: InnerMutex,
-    cond: CondRc,
+    inner_muco: InnerMuCo,
     window_id: WindowId,
+    weak: Box<dyn Any>,
 }
 
 impl UIWindow {
-    fn new(inner_mutex: InnerMutex, cond: CondRc, window_id: WindowId) -> Self {
+    fn new(inner_muco: InnerMuCo, window_id: WindowId, weak: Box<dyn Any>) -> Self {
         Self {
-            inner_mutex,
-            cond,
+            inner_muco,
             window_id,
+            weak,
         }
     }
 
+    pub fn as_weak<C: ComponentHandle + 'static>(&self) -> UIWindowWeak<C> {
+        // At the moment, UIWindow is not aware of the proper slint window type,
+        // so we are determining type based on return value.
+        // TODO: improve this?
+
+        self.weak.downcast_ref::<UIWindowWeak<C>>().expect("Invalid type").cloned()
+    }
+
     pub fn handle_event(&self, event: UIEvent) {
-        let mut inner = self.inner_mutex.lock().unwrap();
+        let mut inner = self.inner_muco.mutex.lock().unwrap();
 
         // Overwrite the previous (unprocessed) event, since we are interested
         // only in the most recent one.
@@ -138,7 +160,7 @@ impl UIWindow {
             event,
         });
 
-        self.cond.notify_all();
+        self.inner_muco.cond.notify_all();
     }
 }
 
@@ -146,12 +168,12 @@ impl Drop for UIWindow {
     fn drop(&mut self) {
         let window_op = WindowOp::Drop(self.window_id);
 
-        let mut inner = self.inner_mutex.lock().unwrap();
+        let mut inner = self.inner_muco.mutex.lock().unwrap();
 
         let window_ops = inner.window_ops();
         window_ops.push(window_op);
 
-        self.cond.notify_all();
+        self.inner_muco.cond.notify_all();
     }
 }
 
@@ -163,8 +185,7 @@ pub enum UIEvent {
 }
 
 struct UIPlatform {
-    inner_mutex: InnerMutex,
-    cond: CondRc,
+    inner_muco: InnerMuCo,
     queue: Queue,
     current_soft_window: RefCell<Option<Rc<MinimalSoftwareWindow>>>,
 }
@@ -179,10 +200,9 @@ struct WindowInfo {
 }
 
 impl UIPlatform {
-    fn new(inner_mutex: InnerMutex, cond: CondRc, queue: Queue) -> Self {
+    fn new(inner_muco: InnerMuCo, queue: Queue) -> Self {
         Self {
-            inner_mutex,
-            cond,
+            inner_muco,
             queue,
             current_soft_window: RefCell::new(None),
         }
@@ -211,20 +231,28 @@ impl Platform for UIPlatform {
         loop {
             let dur_opt = platform::duration_until_next_timer_update();
 
-            let (window_ops_opt, current_event_opt) = {
+            let (window_ops_opt, current_event_opt, callbacks_opt) = {
                 // window_ops_opt is an Option to pass the inner Vec quickly (without copying Vec elements).
 
-                let inner = self.inner_mutex.lock().unwrap();
-                let check = |inner: &mut Inner| inner.window_ops_opt.is_none() && inner.current_event_opt.is_none();
+                let inner = self.inner_muco.mutex.lock().unwrap();
+                let check = |inner: &mut Inner| inner.window_ops_opt.is_none() && inner.current_event_opt.is_none() && inner.callbacks_opt.is_none();
 
                 let mut inner = if let Some(dur) = dur_opt {
-                    self.cond.wait_timeout_while(inner, dur, check).unwrap().0
+                    self.inner_muco.cond.wait_timeout_while(inner, dur, check).unwrap().0
                 } else {
-                    self.cond.wait_while(inner, check).unwrap()
+                    self.inner_muco.cond.wait_while(inner, check).unwrap()
                 };
 
-                (inner.window_ops_opt.take(), inner.current_event_opt.take())
+                (inner.window_ops_opt.take(), inner.current_event_opt.take(), inner.callbacks_opt.take())
             };
+
+            // Run callbacks.
+
+            if let Some(callbacks) = callbacks_opt {
+                for callback in callbacks {
+                    callback();
+                }
+            }
 
             platform::update_timers_and_animations();
 
@@ -235,6 +263,8 @@ impl Platform for UIPlatform {
                     match window_op {
                         WindowOp::Create(window_op_create) => {
                             let handle = (window_op_create.func)(); // This will call create_window_adapter().
+                            let weak = handle.as_weak();
+
                             let soft_window = self.current_soft_window.borrow_mut().take().expect("Missing window");
 
                             let width = window_op_create.width;
@@ -255,6 +285,8 @@ impl Platform for UIPlatform {
                             };
 
                             window_infos.insert(window_op_create.window_id, window_info);
+
+                            window_op_create.weak_tx.send(weak).expect("Unable to send");
                         },
                         WindowOp::Drop(window_id) => {
                             window_infos.remove(&window_id);
@@ -369,10 +401,65 @@ impl Platform for UIPlatform {
     }
 }
 
-pub trait SlintComponentHandle {
+#[derive(Clone)]
+pub struct UILoop {
+    inner_muco: InnerMuCo,
 }
 
-impl<T: ComponentHandle> SlintComponentHandle for T {
+impl UILoop {
+    fn new(inner_muco: InnerMuCo) -> Self {
+        Self {
+            inner_muco,
+        }
+    }
+
+    pub fn add_callback<T: FnOnce() + Send + 'static>(&self, func: T) {
+        // Prefer add_callback() to slint::invoke_from_event_loop(), to hide slint
+        // implementation details.
+
+        let mut inner = self.inner_muco.mutex.lock().unwrap();
+
+        let callbacks = inner.callbacks_opt.get_or_insert_default();
+        callbacks.push(Box::new(func));
+
+        self.inner_muco.cond.notify_all();
+    }
+}
+
+pub trait SlintComponentHandle {
+    // We can't return Something<Self>, since:
+    // - It is not dyn compatible.
+    // - We need a concrete type for WindowOpCreate->weak_tx,rx.
+    
+    fn as_weak(&self) -> Box<dyn Any + Send>;
+}
+
+impl<C: ComponentHandle + 'static> SlintComponentHandle for C {
+    fn as_weak(&self) -> Box<dyn Any + Send> {
+        Box::new(UIWindowWeak::new(self))
+    }
+}
+
+pub struct UIWindowWeak<C: ComponentHandle> {
+    weak: Weak<C>,
+}
+
+impl<C: ComponentHandle> UIWindowWeak<C> {
+    fn new(handle: &C) -> Self {
+        Self {
+            weak: handle.as_weak(),
+        }
+    }
+
+    pub fn upgrade(&self) -> Option<C> {
+        self.weak.upgrade()
+    }
+
+    pub fn cloned(&self) -> UIWindowWeak<C> { // TODO: derive clone?
+        Self {
+            weak: self.weak.clone(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Pod, Zeroable)]

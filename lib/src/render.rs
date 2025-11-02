@@ -1,7 +1,9 @@
+use std::cell::RefCell;
 use std::mem;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI32, Ordering};
+use std::time::Instant;
 
 use bytemuck::{Pod, Zeroable};
 use wgpu::{BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingType, Buffer, BufferBindingType, BufferDescriptor, BufferSize, BufferUsages, Color, CommandEncoderDescriptor, LoadOp, MapMode, Operations, QuerySet, QuerySetDescriptor, QueryType, RenderPassColorAttachment, RenderPassDepthStencilAttachment, RenderPassDescriptor, RenderPassTimestampWrites, ShaderStages, StoreOp};
@@ -10,6 +12,7 @@ use crate::asset::AssetManagerRc;
 use crate::audio::AudioEngineRc;
 use crate::output::{Frame, OutputInfoRc, ViewMat};
 use crate::scene::{MenuParam, SceneInput, SceneManager};
+use crate::util::StatsRc;
 
 const QUERY_COUNT: u32 = 2;
 const QUERY_SIZE: u64 = QUERY_COUNT as u64 * mem::size_of::<u64>() as u64; // TODO: use constant wgpu::QUERY_SIZE.
@@ -27,18 +30,25 @@ struct Uni {
 
 pub struct Render {
     output_info: OutputInfoRc,
+    stats: StatsRc,
     query_set: QuerySet,
     query_resolve_buf: Buffer,
     query_result_buf: Buffer,
-    render_time: Arc<AtomicI32>, // [us]
+    frame_time: Arc<AtomicI32>, // [ms]
     uni_size: u64,
     uni_buf: Buffer,
     uni_bg: BindGroup,
     scene_mgr: SceneManager,
+    inner: RefCell<Inner>,
+}
+
+struct Inner {
+    instant: Instant,
+    fps: u32,
 }
 
 impl Render {
-    pub fn new(asset_mgr: AssetManagerRc, output_info: OutputInfoRc, audio_engine: AudioEngineRc) -> Self {
+    pub fn new(asset_mgr: AssetManagerRc, output_info: OutputInfoRc, stats: StatsRc, audio_engine: AudioEngineRc) -> Self {
         let device = output_info.get_device();
 
         // Create query set to measure GPU execution time.
@@ -63,7 +73,7 @@ impl Render {
             mapped_at_creation: false,
         });
 
-        let render_time = Arc::new(AtomicI32::new(0));
+        let frame_time = Arc::new(AtomicI32::new(0));
 
         // Allocate uniform buffer.
 
@@ -105,23 +115,43 @@ impl Render {
 
         // Create scene manager and load start scene.
 
-        let scene_mgr = SceneManager::new(Arc::clone(&asset_mgr), Rc::clone(&output_info), uni_bg_layout, audio_engine);
+        let scene_mgr = SceneManager::new(Arc::clone(&asset_mgr), Rc::clone(&output_info), Arc::clone(&stats), uni_bg_layout, audio_engine);
         scene_mgr.load(MenuParam::new());
+
+        let inner = Inner {
+            instant: Instant::now(),
+            fps: 0,
+        };
 
         Self {
             output_info,
+            stats,
             query_set,
             query_resolve_buf,
             query_result_buf,
-            render_time,
+            frame_time,
             uni_size,
             uni_buf,
             uni_bg,
             scene_mgr,
+            inner: RefCell::new(inner),
         }
     }
 
     pub fn render<F: Frame>(&self, frame: F, scene_input: &SceneInput) {
+        // Update fps.
+
+        let mut inner = self.inner.borrow_mut();
+        inner.fps += 1;
+
+        let instant = Instant::now();
+        if instant.duration_since(inner.instant).as_secs_f32() >= 1.0 {
+            self.stats.set_fps(inner.fps);
+
+            inner.fps = 0;
+            inner.instant = instant;
+        }
+
         let queue = self.output_info.get_queue();
 
         // Fill uniform buffer. From https://docs.rs/wgpu/latest/wgpu/struct.Queue.html#method.write_buffer_with :
@@ -139,12 +169,13 @@ impl Render {
             frame.set_view_m(&mut uni_buf_view[mem::size_of::<Uni>()..]); // TODO: Refactor it to be typesafe?
         }
 
-        // TODO: Display render_time statistic and use it to offset audio timestamp, moving average?
+        // TODO: Use frame_time statistic to offset audio timestamp, moving average?
 
         let mut do_query = false;
 
-        let render_time = self.render_time.load(Ordering::Relaxed);
-        if render_time >= 0 {
+        let frame_time = self.frame_time.load(Ordering::Relaxed);
+        if frame_time >= 0 {
+            self.stats.set_frame_time(frame_time.try_into().unwrap());
             do_query = true;
         }
 
@@ -189,6 +220,7 @@ impl Render {
                     end_of_pass_write_index: Some(1),
                 }),
                 occlusion_query_set: None,
+                multiview_mask: self.output_info.get_view_mask(),
             });
 
             render_pass.set_bind_group(0, &self.uni_bg, &[]); // See PipelineLayoutDescriptor->bind_group_layouts.
@@ -207,10 +239,10 @@ impl Render {
         frame.end();
 
         if do_query {
-            self.render_time.store(-1, Ordering::Relaxed);
+            self.frame_time.store(-1, Ordering::Relaxed);
 
             let query_result_buf = self.query_result_buf.clone();
-            let render_time = Arc::clone(&self.render_time);
+            let frame_time = Arc::clone(&self.frame_time);
             let ts_period = self.output_info.get_queue().get_timestamp_period();
 
             self.query_result_buf.map_async(MapMode::Read, 0..QUERY_SIZE, move |r| { // TODO: use map_buffer_on_submit?
@@ -223,12 +255,12 @@ impl Render {
                     let values: &[u64] = bytemuck::cast_slice(&buf);
                     let start = values[0];
                     let end = values[1];
-                    t = (end.wrapping_sub(start) as f64 * ts_period as f64 / 1_000.0) as i32;
+                    t = (end.wrapping_sub(start) as f64 * ts_period as f64 / 1_000_000.0) as i32;
                     assert!(t >= 0);
                 }
 
                 query_result_buf.unmap();
-                render_time.store(t, Ordering::Relaxed);
+                frame_time.store(t, Ordering::Relaxed);
             });
         }
     }

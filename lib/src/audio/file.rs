@@ -43,15 +43,15 @@ impl AudioFileFactory {
         let f = self.asset_mgr.open(&self.name);
         let src = ReadOnlySource::new(f);
         let mss = MediaSourceStream::new(Box::new(src), Default::default());
-        let probe = symphonia::default::get_probe().format(&Default::default(), mss, &Default::default(), &Default::default()).expect("Unable to probe");
+        let probe = symphonia::default::get_probe().format(&Default::default(), mss, &Default::default(), &Default::default()).expect("Unable to probe"); // TODO: Report error on UI
         let mut format = probe.format;
 
-        let track = format.default_track().expect("Unable to determine default track");
-        let mut decoder = symphonia::default::get_codecs().make(&track.codec_params, &Default::default()).expect("Unable to create decoder");
+        let track = format.default_track().expect("Unable to determine default track"); // TODO: Report error on UI
+        let mut decoder = symphonia::default::get_codecs().make(&track.codec_params, &Default::default()).expect("Unable to create decoder"); // TODO: Report error on UI
         let track_id = track.id;
 
         let codec_params = decoder.codec_params();
-        assert!(codec_params.channels.unwrap().count() == channels);
+        assert!(codec_params.channels.unwrap().count() == channels); // TODO: Report error on UI
         let decoder_sample_rate = codec_params.sample_rate.unwrap();
 
         // Determine, if we need rate conversion.
@@ -77,10 +77,10 @@ impl AudioFileFactory {
                                     break None;
                                 }
 
-                                panic!("I/O error");
+                                panic!("I/O error"); // TODO: Report error on UI
                             },
                             _ => {
-                                panic!("I/O error");
+                                panic!("I/O error"); // TODO: Report error on UI
                             }
                         }
                     };
@@ -93,7 +93,7 @@ impl AudioFileFactory {
                         continue;
                     }
 
-                    let decoded = decoder.decode(&packet).expect("Decode error");
+                    let decoded = decoder.decode(&packet).expect("Decode error"); // TODO: Report error on UI
                     let decoded_len = decoded.frames();
 
                     if decoded_len == 0 {

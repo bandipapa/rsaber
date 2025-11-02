@@ -1,7 +1,9 @@
 // TODO: Convert it to lockless (e.g. to not block audio mixer thread)
 // and use thread park/unpark on sender-side?
 use std::iter;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::Arc;
+
+use crate::util::MuCo;
 
 pub fn circbuf<T: Copy + Default>(len: usize) -> (Sender<T>, Receiver<T>) {
     assert!(len > 0);
@@ -17,14 +19,15 @@ pub fn circbuf<T: Copy + Default>(len: usize) -> (Sender<T>, Receiver<T>) {
         recv_alive: true,
     };
 
-    let inner_mutex = Arc::new(Mutex::new(inner));
-    let cond = Arc::new(Condvar::new());
+    let inner_muco = Arc::new(MuCo::new(inner));
 
-    let sender = Sender::new(Arc::clone(&inner_mutex), Arc::clone(&cond));
-    let receiver = Receiver::new(Arc::clone(&inner_mutex), Arc::clone(&cond));
+    let sender = Sender::new(Arc::clone(&inner_muco));
+    let receiver = Receiver::new(Arc::clone(&inner_muco));
 
     (sender, receiver)
 }
+
+type InnerMuCo<T> = Arc<MuCo<Inner<T>>>;
 
 struct Inner<T> {
     buf: Box<[T]>,
@@ -35,19 +38,14 @@ struct Inner<T> {
     recv_alive: bool
 }
 
-type InnerMutex<T> = Arc<Mutex<Inner<T>>>;
-type CondRc = Arc<Condvar>;
-
 pub struct Sender<T: Copy> { // TODO: why do we need Copy here?
-    inner_mutex: InnerMutex<T>,
-    cond: CondRc,
+    inner_muco: InnerMuCo<T>,
 }
 
 impl<T: Copy> Sender<T> {
-    fn new(inner_mutex: InnerMutex<T>, cond: CondRc) -> Self {
+    fn new(inner_muco: InnerMuCo<T>) -> Self {
         Self {
-            inner_mutex,
-            cond,
+            inner_muco,
         }
     }
 
@@ -61,10 +59,10 @@ impl<T: Copy> Sender<T> {
                 break;
             }
 
-            let inner = self.inner_mutex.lock().unwrap();
+            let inner = self.inner_muco.mutex.lock().unwrap();
             let inner_buf_len = inner.buf.len();
 
-            let mut inner = self.cond.wait_while(inner, |inner| inner.recv_alive && inner.filled == inner_buf_len).unwrap(); // While full, we need to wait.
+            let mut inner = self.inner_muco.cond.wait_while(inner, |inner| inner.recv_alive && inner.filled == inner_buf_len).unwrap(); // While full, we need to wait.
 
             if !inner.recv_alive { // Receiver has been dropped.
                 return false;
@@ -101,13 +99,13 @@ impl<T: Copy> Sender<T> {
     }
 
     fn notify(&self) {
-        self.cond.notify_all(); // Notify receiver.
+        self.inner_muco.cond.notify_all(); // Notify receiver.
     }
 }
 
 impl<T: Copy> Drop for Sender<T> {
     fn drop(&mut self) {
-        let mut inner = self.inner_mutex.lock().unwrap();
+        let mut inner = self.inner_muco.mutex.lock().unwrap();
         inner.send_alive = false;
 
         self.notify();
@@ -115,15 +113,13 @@ impl<T: Copy> Drop for Sender<T> {
 }
 
 pub struct Receiver<T: Copy> { // TODO: why do we need Copy here?
-    inner_mutex: InnerMutex<T>,
-    cond: CondRc,
-}
+    inner_muco: InnerMuCo<T>,
+} 
 
 impl<T: Copy> Receiver<T> {
-    fn new(inner_mutex: InnerMutex<T>, cond: CondRc) -> Self {
+    fn new(inner_muco: InnerMuCo<T>) -> Self {
         Self {
-            inner_mutex,
-            cond,
+            inner_muco,
         }
     }
 
@@ -137,10 +133,10 @@ impl<T: Copy> Receiver<T> {
                 break;
             }
 
-            let inner = self.inner_mutex.lock().unwrap();
+            let inner = self.inner_muco.mutex.lock().unwrap();
             let inner_buf_len = inner.buf.len();
 
-            let mut inner = self.cond.wait_while(inner, |inner| inner.send_alive && inner.filled == 0).unwrap(); // While empty, we need to wait.
+            let mut inner = self.inner_muco.cond.wait_while(inner, |inner| inner.send_alive && inner.filled == 0).unwrap(); // While empty, we need to wait.
 
             todo = [inner.filled,                     // available data in circ buffer
                     todo].into_iter().min().unwrap(); // available space in destination buffer
@@ -179,20 +175,20 @@ impl<T: Copy> Receiver<T> {
     }
 
     pub fn wait_full(&self) {
-        let inner = self.inner_mutex.lock().unwrap();
+        let inner = self.inner_muco.mutex.lock().unwrap();
         let inner_buf_len = inner.buf.len();
 
-        let _inner = self.cond.wait_while(inner, |inner| inner.send_alive && inner.filled < inner_buf_len).unwrap(); // Wait until full.
+        let _inner = self.inner_muco.cond.wait_while(inner, |inner| inner.send_alive && inner.filled < inner_buf_len).unwrap(); // Wait until full.
     }
 
     fn notify(&self) {
-        self.cond.notify_all(); // Notify sender.
+        self.inner_muco.cond.notify_all(); // Notify sender.
     }
 }
 
 impl<T: Copy> Drop for Receiver<T> {
     fn drop(&mut self) {
-        let mut inner = self.inner_mutex.lock().unwrap();
+        let mut inner = self.inner_muco.mutex.lock().unwrap();
         inner.recv_alive = false;
 
         self.notify();

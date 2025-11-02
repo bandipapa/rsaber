@@ -16,9 +16,12 @@ use rsaber_lib::{APP_NAME, Main};
 use rsaber_lib::asset::EmbedAssetManager;
 use rsaber_lib::output::{WindowBegin, WindowOutput};
 use rsaber_lib::scene::{SceneInput, ScenePose};
+use rsaber_lib::util::Stats;
+
+const COMMENT: &str = "You can use keys w-a-s-d to move, z-x to change elevation, r to reset view and arrow keys to rotate camera. Interaction with UI controls can be done with mouse.";
 
 const MIN_SIZE: PhysicalSize<u32> = PhysicalSize { width: 800, height: 600 };
-const DEFAULT_POS: Vector3<f32> = Vector3::new(0.0, 0.0, 1.8); // TODO: configurable height
+const DEFAULT_POS: Vector3<f32> = Vector3::new(0.0, -2.5, 1.8); // TODO: configurable height
 const ROT_SPEED: f32 = 50.0; // [deg/s]
 const MOVE_SPEED: f32 = 5.0; // [m/s]
 
@@ -62,7 +65,8 @@ impl ApplicationHandler for App {
 
             let window = Arc::new(event_loop.create_window(window_attrs).expect("Unable to create window"));
             let output = WindowOutput::new(SurfaceTarget::from(Arc::clone(&window))).block_on();
-            let main = Main::new(self.asset_mgr.take().unwrap(), output.get_info());
+            let stats = Stats::new(COMMENT);
+            let main = Main::new(self.asset_mgr.take().unwrap(), output.get_info(), stats);
 
             let audio_engine = main.get_audio_engine();
             audio_engine.start();
@@ -207,6 +211,8 @@ impl ApplicationHandler for App {
                             pose_r_opt: None,
                         };
 
+                        let pose;
+
                         if let Some((x, y)) = *cursor_pos {
                             let width = size.width as f32;
                             let height = size.height as f32;
@@ -229,7 +235,8 @@ impl ApplicationHandler for App {
                             let rot_m = Matrix3::from_cols(unit_x, unit_y, unit_z) * Matrix3::from_angle_x(Deg(-90.0));
                             let rot = Quaternion::from(rot_m);
 
-                            scene_input.pose_l_opt = Some(ScenePose::new(pos, &rot, *cursor_click, false));
+                            pose = Pose::new(pos, &rot, *cursor_click);
+                            scene_input.pose_l_opt = Some(&pose);
                         }
 
                         data.main.render(frame, &scene_input);
@@ -272,6 +279,44 @@ impl ApplicationHandler for App {
             },
             _ => (),
         }
+    }
+}
+
+struct Pose {
+    pos: Vector3<f32>,
+    rot: Quaternion<f32>,
+    click: bool,
+}
+
+impl Pose {
+    fn new(pos: &Vector3<f32>, rot: &Quaternion<f32>, click: bool) -> Self {
+        Self {
+            pos: *pos,
+            rot: *rot,
+            click,
+        }
+    }
+}
+
+impl ScenePose for Pose {
+    fn get_pos(&self) -> &Vector3<f32> {
+        &self.pos
+    }
+
+    fn get_rot(&self) -> &Quaternion<f32> {
+        &self.rot
+    }
+
+    fn get_click(&self) -> bool {
+        self.click
+    }
+
+    fn get_render(&self) -> bool {
+        false
+    }
+
+    fn apply_haptic(&self) {
+        // No haptic support in windowed mode.
     }
 }
 

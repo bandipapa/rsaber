@@ -1,9 +1,9 @@
 use std::cell::RefCell;
 
 use cgmath::{Angle, Deg, InnerSpace, Matrix, Matrix3, Matrix4, Point3, Rad, Vector3};
-use wgpu::{CompositeAlphaMode, Device, DeviceDescriptor, Instance, PresentMode, Queue, RequestAdapterOptions, Surface, SurfaceConfiguration, SurfaceError, SurfaceTarget, SurfaceTexture, TextureFormat, TextureFormatFeatureFlags, TextureUsages, TextureView};
+use wgpu::{CompositeAlphaMode, Device, DeviceDescriptor, Instance, PresentMode, Queue, RequestAdapterOptions, Surface, SurfaceConfiguration, SurfaceError, SurfaceTarget, SurfaceTexture, TextureFormat, TextureUsages, TextureView};
 
-use crate::output::{DEPTH_FORMAT, NEAR_Z, FAR_Z, Frame, OutputInfo, ViewMat, create_texture, get_default_features, get_default_limits};
+use crate::output::{DEPTH_FORMAT, NEAR_Z, FAR_Z, Frame, OutputInfo, ViewMat, create_texture, get_default_features, get_default_limits, get_sample_count};
 
 type OutputViewMat = ViewMat;
 
@@ -48,15 +48,7 @@ impl WindowOutput {
         let surface_caps = surface.get_capabilities(&adapter);
         let color_format = *surface_caps.formats.iter().find(|format| format.is_srgb()).expect("Missing sRGB texture format");
 
-        let mut sample_count = 1;
-
-        let color_flags = adapter.get_texture_format_features(color_format).flags;
-        for (flag, count) in [(TextureFormatFeatureFlags::MULTISAMPLE_X4, 4), (TextureFormatFeatureFlags::MULTISAMPLE_X2, 2)] { // TODO: enable higher msaa? needs TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
-            if color_flags.contains(flag) {
-                sample_count = count;
-                break;
-            }
-        }
+        let sample_count = get_sample_count(&adapter, color_format);
 
         let surface_config = SurfaceConfiguration {
             usage: TextureUsages::RENDER_ATTACHMENT,

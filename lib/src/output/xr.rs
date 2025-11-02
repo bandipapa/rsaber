@@ -14,7 +14,7 @@ use android_activity::AndroidApp;
 
 use crate::{APP_NAME, APP_VERSION_MAJOR, APP_VERSION_MINOR, APP_VERSION_PATCH, Main};
 use crate::scene::{SceneInput, ScenePose};
-use crate::output::{DEPTH_FORMAT, NEAR_Z, FAR_Z, Frame, OutputInfo, ViewMat, create_texture, get_default_features, get_default_limits};
+use crate::output::{DEPTH_FORMAT, NEAR_Z, FAR_Z, Frame, OutputInfo, ViewMat, create_texture, get_default_features, get_default_limits, get_sample_count};
 
 type OutputViewMat = [ViewMat; 2];
 
@@ -38,10 +38,7 @@ pub struct XROutput {
     multisample_view: Option<TextureView>,
     width: u32,
     height: u32,
-    // OpenXR (separate RefCells are needed because of partial borrows, see XRFrame->end())
-    xr_swapchain: RefCell<openxr::Swapchain<openxr::Vulkan>>,
     xr_session: openxr::Session<openxr::Vulkan>,
-    xr_stream: RefCell<openxr::FrameStream<openxr::Vulkan>>,
     inner: RefCell<Inner>,
     xr_space: openxr::Space,
     xr_action_set: openxr::ActionSet,
@@ -49,6 +46,8 @@ pub struct XROutput {
     xr_right_space: openxr::Space,
     xr_left_click: openxr::Action<bool>,
     xr_right_click: openxr::Action<bool>,
+    xr_left_haptic: openxr::Action<openxr::Haptic>,
+    xr_right_haptic: openxr::Action<openxr::Haptic>,
     xr_inst: openxr::Instance,
 }
 
@@ -56,6 +55,8 @@ struct Inner {
     state: State,
     event_buf: openxr::EventDataBuffer,
     xr_waiter: openxr::FrameWaiter,
+    xr_stream: openxr::FrameStream<openxr::Vulkan>,
+    xr_swapchain: openxr::Swapchain<openxr::Vulkan>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -70,7 +71,7 @@ enum State {
 #[allow(clippy::large_enum_variant)]
 enum Begin<'a> {
     NoRender,
-    Frame((XRFrame<'a>, SceneInput)),
+    Frame((XRFrame<'a>, Option<XRPose>, Option<XRPose>)),
 }
 
 impl XROutput {
@@ -216,7 +217,7 @@ impl XROutput {
         // - Query wgpu required extensions.
         // - Query OpenXR required extensions.
 
-        let wgpu_features = get_default_features() | Features::MULTIVIEW;
+        let wgpu_features = get_default_features() | Features::MULTIVIEW | Features::MULTISAMPLE_ARRAY;
 
         let wgpu_exts = wgpu_hal_adapter.adapter.required_device_extensions(wgpu_features).into_iter().map(|s| s.to_str().unwrap());
         let xr_exts_str = xr_inst.vulkan_legacy_device_extensions(xr_system).expect("OpenXR vulkan_legacy_device_extensions() failed");
@@ -294,7 +295,8 @@ impl XROutput {
         let wgpu_inst = unsafe { Instance::from_hal::<wgpu::hal::vulkan::Api>(wgpu_hal_inst) };
         let wgpu_adapter = unsafe { wgpu_inst.create_adapter_from_hal(wgpu_hal_adapter) };
 
-        let wgpu_limits = get_default_limits();
+        let mut wgpu_limits = get_default_limits();
+        wgpu_limits.max_multiview_view_count = 2;
 
         let device_desc = DeviceDescriptor {
             required_features: wgpu_features,
@@ -378,16 +380,15 @@ impl XROutput {
 
         let color_views = xr_swapchain_imgs.into_iter().map(|texture_raw| {
             let texture_handle = ash::vk::Image::from_raw(texture_raw);
-            let texture_hal = unsafe { wgpu_hal_dev.texture_from_raw(texture_handle, &wgpu_color_descr_hal, Some(Box::new(|| {}))) }; // Don't take ownership of the texture. // TODO: use dropguard?
+            let texture_hal = unsafe { wgpu_hal_dev.texture_from_raw(texture_handle, &wgpu_color_descr_hal, Some(Box::new(|| {})), wgpu::hal::vulkan::TextureMemory::External) }; // Don't take ownership of the texture. // TODO: use dropguard?
             let texture = unsafe { device.create_texture_from_hal::<wgpu::hal::vulkan::Api>(texture_hal, &wgpu_color_descr) };
             texture.create_view(&Default::default())
         }).collect();
 
         // Setup multisample buffer.
-        // TODO: At the moment, multiview + multisample combo is not supported by wgpu.
-        // TODO: If multisample is requested, then don't use multiview?
 
-        let sample_count = 1;
+        let sample_count = get_sample_count(&wgpu_adapter, color_format);
+
         let multisample_view = if sample_count > 1 {
             let texture = create_texture(&device, width, height, 2, sample_count, color_format);
             Some(texture.create_view(&Default::default()))
@@ -411,6 +412,9 @@ impl XROutput {
         let xr_left_click = xr_action_set.create_action::<bool>("left_click", "Left Click", &[]).expect("OpenXR create_action() failed");
         let xr_right_click = xr_action_set.create_action::<bool>("right_click", "Right Click", &[]).expect("OpenXR create_action() failed");
 
+        let xr_left_haptic = xr_action_set.create_action::<openxr::Haptic>("left_haptic", "Left Haptic", &[]).expect("OpenXR create_action() failed");
+        let xr_right_haptic = xr_action_set.create_action::<openxr::Haptic>("right_haptic", "Right Haptic", &[]).expect("OpenXR create_action() failed");
+
         xr_inst.suggest_interaction_profile_bindings(
             xr_inst.string_to_path("/interaction_profiles/khr/simple_controller").expect("OpenXR string_to_path() failed"),
             &[
@@ -429,6 +433,14 @@ impl XROutput {
                 openxr::Binding::new(
                     &xr_right_click,
                     xr_inst.string_to_path("/user/hand/right/input/select/click").expect("OpenXR string_to_path() failed"),
+                ),
+                openxr::Binding::new(
+                    &xr_left_haptic,
+                    xr_inst.string_to_path("/user/hand/left/output/haptic").expect("OpenXR string_to_path() failed"),
+                ),
+                openxr::Binding::new(
+                    &xr_right_haptic,
+                    xr_inst.string_to_path("/user/hand/right/output/haptic").expect("OpenXR string_to_path() failed"),
                 )
             ]).expect("OpenXR suggest_interaction_profile_bindings() failed");
 
@@ -447,13 +459,13 @@ impl XROutput {
             multisample_view,
             width,
             height,
-            xr_swapchain: RefCell::new(xr_swapchain),
             xr_session,
-            xr_stream: RefCell::new(xr_stream),
             inner: RefCell::new(Inner {
                 state: State::Stopped,
                 event_buf: openxr::EventDataBuffer::new(),
                 xr_waiter,
+                xr_stream,
+                xr_swapchain,
             }),
             xr_space,
             xr_action_set,
@@ -461,23 +473,25 @@ impl XROutput {
             xr_right_space,
             xr_left_click,
             xr_right_click,
+            xr_left_haptic,
+            xr_right_haptic,
             xr_inst,
         }
     }
 
     pub fn get_info(&self) -> OutputInfo { // TODO: prepare it it new and don't create new instance everytime?
-        OutputInfo::new(&self.device, &self.queue, self.color_format, DEPTH_FORMAT, self.sample_count, 2, "@builtin(view_index) view_index: i32,", "in.view_index")
+        OutputInfo::new(&self.device, &self.queue, self.color_format, DEPTH_FORMAT, self.sample_count, 2, "@builtin(view_index) view_index: u32,", "in.view_index")
     }
 
     pub fn poll(&self, main: &Main) -> bool {
         // This is a common main loop method, which is shared by all VR targets.
 
-        let mut inner = self.inner.borrow_mut();
+        let inner = &mut *self.inner.borrow_mut();
 
         let old_state = inner.state;
         assert!(!matches!(old_state, State::Exit)); // Once exited, no more poll is possible.
 
-        self.poll_impl(&mut inner);
+        self.poll_impl(inner);
         let new_state = inner.state;
 
         match new_state {
@@ -485,9 +499,16 @@ impl XROutput {
                 thread::sleep(Duration::from_secs_f32(NOTRUNNING_SLEEP));
             },
             State::Ready | State::Visible | State::Focused => {
-                match self.begin(&mut inner) {
+                match self.begin(inner) {
                     Begin::NoRender => (),
-                    Begin::Frame((frame, scene_input)) => main.render(frame, &scene_input),
+                    Begin::Frame((frame, pose_l_opt, pose_r_opt)) => {
+                        let scene_input = SceneInput {
+                            pose_l_opt: pose_l_opt.as_ref().map(|pose| pose as &dyn ScenePose),
+                            pose_r_opt: pose_r_opt.as_ref().map(|pose| pose as &dyn ScenePose),
+                        };
+
+                        main.render(frame, &scene_input);
+                    },
                 }
             },
             State::Exit => {
@@ -541,8 +562,8 @@ impl XROutput {
         }
     }
 
-    fn begin(&self, inner: &mut Inner) -> Begin<'_> {
-        let mut xr_stream = self.xr_stream.borrow_mut();
+    fn begin<'a>(&'a self, inner: &'a mut Inner) -> Begin<'a> {
+        let xr_stream = &mut inner.xr_stream;
 
         let frame_state = inner.xr_waiter.wait().expect("OpenXR wait() failed");
         xr_stream.begin().expect("OpenXR begin() failed");
@@ -556,7 +577,7 @@ impl XROutput {
 
         // Acquire next image from swapchain.
 
-        let mut xr_swapchain = self.xr_swapchain.borrow_mut();
+        let xr_swapchain = &mut inner.xr_swapchain;
         let color_index = xr_swapchain.acquire_image().expect("OpenXR acquire_image() failed");
         xr_swapchain.wait_image(openxr::Duration::INFINITE).expect("OpenXR wait_image() failed");
         let color_view = self.color_views[color_index as usize].clone();
@@ -573,14 +594,9 @@ impl XROutput {
         let click_state_l = self.xr_left_click.state(&self.xr_session, openxr::Path::NULL).expect("OpenXR state() failed");
         let click_state_r = self.xr_right_click.state(&self.xr_session, openxr::Path::NULL).expect("OpenXR state() failed");
 
-        let pose_l_opt = self.calc_pose(focused, &left_location, &click_state_l);
-        let pose_r_opt = self.calc_pose(focused, &right_location, &click_state_r);
+        let pose_l_opt = self.calc_pose(focused, &left_location, &click_state_l, &self.xr_left_haptic);
+        let pose_r_opt = self.calc_pose(focused, &right_location, &click_state_r, &self.xr_right_haptic);
         
-        let scene_input = SceneInput {
-            pose_l_opt,
-            pose_r_opt,
-        };
-
         // Calculate view matrices.
 
         let (_, views) = self.xr_session.locate_views(openxr::ViewConfigurationType::PRIMARY_STEREO, display_t, &self.xr_space).expect("OpenXR locate_views() failed");
@@ -611,11 +627,11 @@ impl XROutput {
             cam_pos.z += pos.y / 2.0;
         }
 
-        let frame = XRFrame::new(&self.xr_swapchain, &self.xr_stream, &self.xr_space, self.width, self.height, display_t, views, color_view, self.multisample_view.clone(), self.depth_view.clone(), view_m, cam_pos);
-        Begin::Frame((frame, scene_input))
+        let frame = XRFrame::new(xr_swapchain, xr_stream, &self.xr_space, self.width, self.height, display_t, views, color_view, self.multisample_view.clone(), self.depth_view.clone(), view_m, cam_pos);
+        Begin::Frame((frame, pose_l_opt, pose_r_opt))
     }
 
-    fn calc_pose(&self, focused: bool, location: &openxr::SpaceLocation, click_state: &openxr::ActionState<bool>) -> Option<ScenePose> {
+    fn calc_pose(&self, focused: bool, location: &openxr::SpaceLocation, click_state: &openxr::ActionState<bool>, haptic: &openxr::Action<openxr::Haptic>) -> Option<XRPose> {
         if focused && location.location_flags.contains(openxr::SpaceLocationFlags::POSITION_VALID | openxr::SpaceLocationFlags::ORIENTATION_VALID) && click_state.is_active {
             let offset = Quaternion::from_angle_x(Deg(-45.0));
 
@@ -623,7 +639,7 @@ impl XROutput {
             let rot = location.pose.orientation;
             let my_rot = Quaternion::new(rot.w, rot.x, -rot.z, rot.y) * offset;
 
-            Some(ScenePose::new(&Vector3::new(pos.x, -pos.z, pos.y), &my_rot, click_state.current_state, true))
+            Some(XRPose::new(&Vector3::new(pos.x, -pos.z, pos.y), &my_rot, click_state.current_state, self.xr_session.clone(), haptic.clone()))
         } else {
             None
         }
@@ -683,8 +699,8 @@ impl Drop for DropGuard {
 }
 
 struct XRFrame<'a> {
-    xr_swapchain: &'a RefCell<openxr::Swapchain<openxr::Vulkan>>,
-    xr_stream: &'a RefCell<openxr::FrameStream<openxr::Vulkan>>,
+    xr_swapchain: &'a mut openxr::Swapchain<openxr::Vulkan>,
+    xr_stream: &'a mut openxr::FrameStream<openxr::Vulkan>,
     xr_space: &'a openxr::Space,
     width: u32,
     height: u32,
@@ -699,7 +715,7 @@ struct XRFrame<'a> {
 
 impl<'a> XRFrame<'a> {
     #[allow(clippy::too_many_arguments)]
-    fn new(xr_swapchain: &'a RefCell<openxr::Swapchain<openxr::Vulkan>>, xr_stream: &'a RefCell<openxr::FrameStream<openxr::Vulkan>>, xr_space: &'a openxr::Space, width: u32, height: u32, display_t: openxr::Time, views: Vec<openxr::View>, color_view: TextureView, multisample_view: Option<TextureView>, depth_view: TextureView, view_m: OutputViewMat, cam_pos: Vector3<f32>) -> Self {
+    fn new(xr_swapchain: &'a mut openxr::Swapchain<openxr::Vulkan>, xr_stream: &'a mut openxr::FrameStream<openxr::Vulkan>, xr_space: &'a openxr::Space, width: u32, height: u32, display_t: openxr::Time, views: Vec<openxr::View>, color_view: TextureView, multisample_view: Option<TextureView>, depth_view: TextureView, view_m: OutputViewMat, cam_pos: Vector3<f32>) -> Self {
         Self {
             xr_swapchain,
             xr_stream,
@@ -741,8 +757,7 @@ impl<'a> Frame for XRFrame<'a> {
     }
 
     fn end(self) {
-        let mut xr_swapchain = self.xr_swapchain.borrow_mut();
-        xr_swapchain.release_image().expect("OpenXR release_image() failed");
+        self.xr_swapchain.release_image().expect("OpenXR release_image() failed");
 
         let rect = openxr::Rect2Di { // TODO: Precreate this object?
             offset: openxr::Offset2Di {
@@ -760,7 +775,7 @@ impl<'a> Frame for XRFrame<'a> {
                 .pose(self.views[0].pose)
                 .fov(self.views[0].fov)
                 .sub_image(openxr::SwapchainSubImage::new()
-                    .swapchain(&xr_swapchain)
+                    .swapchain(self.xr_swapchain)
                     .image_array_index(0)
                     .image_rect(rect)
                 ),
@@ -768,7 +783,7 @@ impl<'a> Frame for XRFrame<'a> {
                 .pose(self.views[1].pose)
                 .fov(self.views[1].fov)
                 .sub_image(openxr::SwapchainSubImage::new()
-                    .swapchain(&xr_swapchain)
+                    .swapchain(self.xr_swapchain)
                     .image_array_index(1)
                     .image_rect(rect)
                 ),
@@ -778,7 +793,50 @@ impl<'a> Frame for XRFrame<'a> {
             .space(self.xr_space)
             .views(&views);
 
-        self.xr_stream.borrow_mut().end(self.display_t, openxr::EnvironmentBlendMode::OPAQUE, &[&layer]).expect("OpenXR end() failed");
+        self.xr_stream.end(self.display_t, openxr::EnvironmentBlendMode::OPAQUE, &[&layer]).expect("OpenXR end() failed");
+    }
+}
+
+struct XRPose {
+    pos: Vector3<f32>,
+    rot: Quaternion<f32>,
+    click: bool,
+    xr_session: openxr::Session<openxr::Vulkan>,
+    haptic: openxr::Action<openxr::Haptic>,
+}
+
+impl XRPose {
+    fn new(pos: &Vector3<f32>, rot: &Quaternion<f32>, click: bool, xr_session: openxr::Session<openxr::Vulkan>, haptic: openxr::Action<openxr::Haptic>) -> Self {
+        Self {
+            pos: *pos,
+            rot: *rot,
+            click,
+            xr_session,
+            haptic,
+        }
+    }
+}
+
+impl ScenePose for XRPose {
+    fn get_pos(&self) -> &Vector3<f32> {
+        &self.pos
+    }
+
+    fn get_rot(&self) -> &Quaternion<f32> {
+        &self.rot
+    }
+
+    fn get_click(&self) -> bool {
+        self.click
+    }
+
+    fn get_render(&self) -> bool {
+        true
+    }
+
+    fn apply_haptic(&self) {
+        let event = openxr::HapticVibration::new().duration(openxr::Duration::MIN_HAPTIC).frequency(openxr::FREQUENCY_UNSPECIFIED).amplitude(1.0);
+        self.haptic.apply_feedback(&self.xr_session, openxr::Path::NULL, &event).expect("OpenXR apply_feedback() failed");
     }
 }
 

@@ -7,9 +7,7 @@ use crate::asset::AssetManagerRc;
 use crate::model::{Color, InstPhongColorBuf, InstShaderImplType, InstShaderType, Mesh, Model, ModelFactory, ModelHandle, Obj, PhongParam};
 use crate::ui::UIManagerRc;
 
-pub const SABER_DIR: Vector3<f32> = Vector3::new(0.0, 0.0, 1.0); // Saber direction in case of neutral/identity rotation.
-pub const SABER_HANDLE_PHONG_PARAM: PhongParam = PhongParam::new(0.1, 0.2, 0.3, 64.0);
-pub const SABER_RAY_PHONG_PARAM: PhongParam = PhongParam::new(1.0, 0.0, 0.0, 0.0);
+pub const SABER_DIR: Vector3<f32> = Vector3::new(0.0, 0.0, 1.0); // Saber direction in case of neutral/identity rotation, including saber length.
 
 pub enum SaberVisibility {
     Hidden,

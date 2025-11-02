@@ -1,6 +1,6 @@
 use std::cell::RefCell;
 
-use cgmath::{Matrix4, Quaternion, Vector3};
+use cgmath::{InnerSpace, Matrix4, Quaternion, Vector3};
 use wgpu::{BufferUsages, Device};
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
 
@@ -35,8 +35,10 @@ impl ModelFactory for PointerParam {
 
         // Create line.
 
+        let dir = SABER_DIR.normalize();
+
         vertexes.push(VertexPos { pos: [0.0, 0.0, 0.0] });
-        vertexes.push(VertexPos { pos: [SABER_DIR.x, SABER_DIR.y, SABER_DIR.z] });
+        vertexes.push(VertexPos { pos: [dir.x, dir.y, dir.z] });
 
         indexes.push(0);
         indexes.push(1);

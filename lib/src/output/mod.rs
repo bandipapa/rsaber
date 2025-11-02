@@ -1,8 +1,10 @@
+use std::cmp::Reverse;
+use std::num::NonZeroU32;
 use std::rc::Rc;
 
 use cfg_if::cfg_if;
 use cgmath::Vector3;
-use wgpu::{Device, Extent3d, Features, Limits, Queue, Texture, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages, TextureView};
+use wgpu::{Adapter, Device, Extent3d, Features, Limits, Queue, Texture, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages, TextureView};
 
 cfg_if! {
     if #[cfg(feature = "window")] {
@@ -21,6 +23,7 @@ cfg_if! {
 const DEPTH_FORMAT: TextureFormat = TextureFormat::Depth32Float;
 const NEAR_Z: f32 = 0.1;
 const FAR_Z: f32 = 100.0;
+const MAX_SAMPLE_COUNT: u32 = 4;
 
 pub type ViewMat = [[f32; 4]; 4];
 
@@ -79,6 +82,10 @@ impl OutputInfo {
         self.view_len
     }
 
+    pub fn get_view_mask(&self) -> Option<NonZeroU32> {
+        NonZeroU32::new(if self.view_len == 1 { 0 } else { (1 << self.view_len) - 1 })
+    }
+
     pub fn get_view_index_def(&self) -> &str {
         &self.view_index_def
     }
@@ -109,6 +116,13 @@ fn get_default_limits() -> Limits {
         max_binding_array_sampler_elements_per_shader_stage: 8,
         ..Default::default()
     }
+}
+
+fn get_sample_count(adapter: &Adapter, color_format: TextureFormat) -> u32 {
+    let mut sample_counts = adapter.get_texture_format_features(color_format).flags.supported_sample_counts();
+    sample_counts.sort_by_key(|count| Reverse(*count));
+
+    sample_counts.into_iter().find(|count| *count <= MAX_SAMPLE_COUNT).unwrap_or(1)
 }
 
 fn create_texture(device: &Device, width: u32, height: u32, layers: u32, sample_count: u32, format: TextureFormat) -> Texture {

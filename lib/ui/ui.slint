@@ -1,6 +1,6 @@
-import "font/NotoSans-Regular.ttf";
-
 import { AboutSlint, Button } from "std-widgets.slint";
+
+import "font/NotoSans-Regular.ttf";
 
 global Const {
     out property<string> default-font-family: "Noto Sans";
@@ -117,6 +117,82 @@ export component PoweredByWindow inherits Window {
                     }
                 }
             }
+        }
+    }
+}
+
+export component GameStatsWindow inherits Window {
+    default-font-family: Const.default-font-family;
+    default-font-size: Const.default-font-size;
+    background: Const.border-color;
+
+    in property<int> count;
+    in property<int> total;
+
+    VerticalLayout {
+        Text {
+            text: "Stats";
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            color: Const.title-color;
+            height: Const.title-height;
+        }
+
+        Rectangle {
+            background: Const.content-background;
+            border-color: Const.border-color;
+            border-width: Const.border-width;
+            border-radius: 2 * Const.border-width;
+
+            Text {
+                text: "Hits: \{root.count}/\{root.total}";
+            }
+        }
+    }
+}
+
+export component StatsWindow inherits Window {
+    default-font-family: Const.default-font-family;
+    default-font-size: Const.default-font-size;
+    background: #000000;
+
+    in property<string> comment;
+    in property<int> fps;
+    in property<int> frame_time;
+    in property<int> draw_calls;
+    in property<int> inst_num;
+    in property<int> inst_buf;
+
+    VerticalLayout {
+        Text {
+            text: root.comment;
+            color: #ffffff;
+            wrap: word-wrap;
+        }
+
+        Text {
+            text: "Frames/s: \{root.fps}";
+            color: #ffffff;
+        }
+
+        Text {
+            text: "Frame time [ms]: \{root.frame_time}";
+            color: #ffffff;
+        }
+
+        Text {
+            text: "Draw calls/frame: \{root.draw_calls}";
+            color: #ffffff;
+        }
+
+        Text {
+            text: "Instances: \{root.inst_num}";
+            color: #ffffff;
+        }
+
+        Text {
+            text: "Instance buf [kB/s]: \{root.fps * root.inst_buf / 1024}";
+            color: #ffffff;
         }
     }
 }

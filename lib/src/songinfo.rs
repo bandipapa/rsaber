@@ -201,12 +201,11 @@ impl BeatmapInfo {
         &self.def_color_scheme
     }
 
-    #[allow(dead_code)] // TODO: remove
-    fn get_notejump_speed(&self) -> f32 {
+    pub fn get_notejump_speed(&self) -> f32 {
         self.notejump_speed
     }
 
-    #[allow(dead_code)] // TODO: remove
+    #[allow(dead_code)] // TODO: remove dead_code once it is used
     fn get_notejump_beatoffset(&self) -> f32 {
         self.notejump_beatoffset
     }
@@ -581,7 +580,7 @@ pub enum NoteCutDir {
 impl Note {
     fn new(bpm_pos: f32, x: u8, y: u8, note_type: NoteType, cut_dir: NoteCutDir) -> Result<Self> {
         if x > 3 || y > 2 {
-            return Err(Error::BuildError("either note x or y invalid".to_string()));
+            return Err(Error::BuildError("Either note x or y invalid".to_string()));
         }
 
         Ok(Self {
@@ -796,14 +795,14 @@ fn get_version(top_value: &Value) -> Result<&str> {
                 if let Value::String(version) = version_value {
                     return Ok(version);
                 } else {
-                    return Err(Error::BuildError("version should be a string".to_string()));
+                    return Err(Error::BuildError("Version should be a string".to_string()));
                 }
             }
         }
 
-        Err(Error::BuildError("version not found".to_string()))
+        Err(Error::BuildError("Version not found".to_string()))
     } else {
-        Err(Error::BuildError("object expected at top-level".to_string()))
+        Err(Error::BuildError("Object expected at top-level".to_string()))
     }
 }
 

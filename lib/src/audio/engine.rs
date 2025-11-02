@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
-use cpal::{BufferSize, Device, SampleFormat, Stream, StreamConfig};
+use cpal::{BufferSize, Device, SampleFormat, SampleRate, Stream, StreamConfig};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
 const CHANNELS: u16 = 2;
@@ -61,11 +61,20 @@ impl AudioEngine {
         // - SampleFormat::F32 is needed for sample rate conversion (rubato).
         // - The sample rate should be closest to MIN_SAMPLE_RATE.
 
-        let mut ranges: Vec<_> = device.supported_output_configs().expect("Unable to determine supported formats").filter(|range| range.channels() == CHANNELS && range.min_sample_rate().0 >= MIN_SAMPLE_RATE && range.sample_format() == SampleFormat::F32).collect();
-        ranges.sort_by_key(|range| range.min_sample_rate().0);
+        let all_ranges: Vec<_> = device.supported_output_configs().expect("Unable to determine supported formats").filter(|range| range.channels() == CHANNELS && range.sample_format() == SampleFormat::F32).collect();
 
-        let range = ranges.first().expect("No supported format");
-        let mut config: StreamConfig = range.with_sample_rate(range.min_sample_rate()).config();
+        let mut ranges: Vec<_> = all_ranges.iter().filter(|range| range.min_sample_rate().0 <= MIN_SAMPLE_RATE && range.max_sample_rate().0 >= MIN_SAMPLE_RATE).collect();
+        let (range, sample_rate) = if !ranges.is_empty() {
+            (ranges[0], MIN_SAMPLE_RATE)
+        } else {
+            ranges = all_ranges.iter().filter(|range| range.min_sample_rate().0 >= MIN_SAMPLE_RATE).collect();
+            ranges.sort_by_key(|range| range.min_sample_rate().0);
+            let range = ranges.first().expect("No supported format");
+
+            (*range, range.min_sample_rate().0)
+        };
+  
+        let mut config: StreamConfig = range.with_sample_rate(SampleRate(sample_rate)).config();
         config.buffer_size = BufferSize::Fixed((config.sample_rate.0 as f32 * LATENCY) as u32); // TODO: hardcoded bufsize, determine it from device capabilities?
 
         // Construct inner.

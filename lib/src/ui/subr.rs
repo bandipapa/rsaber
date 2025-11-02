@@ -95,8 +95,11 @@ impl UISubr {
 
         let mut pointer_visible = false;
 
-        if let Some(pose) = pose_opt {
-            pointer_visible = true;
+        if let Some(pose) = *pose_opt {
+            if pose.get_render() {
+                pointer_visible = true;
+            }
+            
             let mut pointer_scale = ACTIVE;
             let mut have_window = false;
 
@@ -151,7 +154,7 @@ impl UISubr {
         pointer.set_visible(pointer_visible);
     }
 
-    fn update_saber(saber: &Saber, pose_opt: &Option<ScenePose>) {
+    fn update_saber(saber: &Saber, pose_opt: &Option<&dyn ScenePose>) {
         if let Some(pose) = pose_opt && pose.get_render() {
             saber.set_visible(SaberVisibility::Handle);
             saber.set_pos(pose.get_pos());
@@ -161,7 +164,7 @@ impl UISubr {
         }
     }
 
-    fn update_click(prev_click: &mut Option<bool>, pose_opt: &Option<ScenePose>) -> bool {
+    fn update_click(prev_click: &mut Option<bool>, pose_opt: &Option<&dyn ScenePose>) -> bool {
         let mut click_triggered = false;
 
         *prev_click = if let Some(pose) = pose_opt {

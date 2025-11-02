@@ -8,9 +8,10 @@ use cgmath::{Deg, Quaternion, Rotation3, Vector3};
 use crate::asset::AssetManagerRc;
 use crate::audio::{AudioEngineRc, AudioFileFactory, AudioFileHandle, AudioFileTimestamp};
 use crate::model::*;
-use crate::scene::{GameParam, Scene, SceneFactory, SceneInput, SceneManager};
+use crate::scene::{GameParam, Scene, SceneFactory, SceneInput, SceneManager, create_floor, create_stats_window, create_saber};
 use crate::songinfo::{SongInfo, ColorScheme};
-use crate::ui::{AboutWindow, PoweredByWindow, SearchWindow};
+use crate::ui::{AboutWindow, PoweredByWindow, SearchWindow, UILoop};
+use crate::util::StatsRc;
 
 const POINTER_COLOR: Color = Color([0.4, 0.4, 0.4]);
 
@@ -27,8 +28,8 @@ impl MenuParam {
 impl SceneFactory for MenuParam {
     type Scene = Menu;
 
-    fn load(self, asset_mgr: AssetManagerRc, model_reg: &mut ModelRegistry, audio_engine: AudioEngineRc) -> Self::Scene {
-        Menu::new(self, asset_mgr, model_reg, audio_engine)
+    fn load(self, asset_mgr: AssetManagerRc, model_reg: &mut ModelRegistry, stats: StatsRc, audio_engine: AudioEngineRc, ui_loop: &UILoop) -> Self::Scene {
+        Menu::new(self, asset_mgr, model_reg, stats, audio_engine, ui_loop)
     }
 }
 
@@ -50,10 +51,10 @@ struct Inner {
 }
 
 impl Menu {
-    fn new(_param: MenuParam, asset_mgr: AssetManagerRc, model_reg: &mut ModelRegistry, audio_engine: AudioEngineRc) -> Self {
+    fn new(_param: MenuParam, asset_mgr: AssetManagerRc, model_reg: &mut ModelRegistry, stats: StatsRc, audio_engine: AudioEngineRc, ui_loop: &UILoop) -> Self {
         // Setup about by window.
 
-        let window_param = WindowParam::new(500, 500, move || {
+        let window_param = WindowParam::new(500, 500, || {
             AboutWindow::new().unwrap()
         });
 
@@ -69,11 +70,7 @@ impl Menu {
 
         let window_param = WindowParam::new(1000, 500, move || {
             let window = SearchWindow::new().unwrap();
-
-            window.on_start({
-                let search_window_tx = search_window_tx.clone();
-                move || search_window_tx.send(()).unwrap()
-            });
+            window.on_start(move || search_window_tx.send(()).unwrap());
 
             window
         });
@@ -85,7 +82,7 @@ impl Menu {
 
         // Setup powered by window.
 
-        let window_param = WindowParam::new(500, 500, move || {
+        let window_param = WindowParam::new(500, 500, || {
             PoweredByWindow::new().unwrap()
         });
 
@@ -97,10 +94,8 @@ impl Menu {
 
         // Setup floor.
 
-        let floor_param = FloorParam::new(&COLOR_WHITE);
-        let floor = model_reg.create(floor_param);
-        floor.set_visible(true);
-        floor.set_pos(&Vector3::new(0.0, 0.0, 0.0));
+        create_floor(model_reg);
+        create_stats_window(model_reg, stats, ui_loop);
 
         // Setup sabers.
 
@@ -108,11 +103,7 @@ impl Menu {
         let color_l = color_scheme.get_color_l();
         let color_r = color_scheme.get_color_r();
 
-        let saber_param = SaberParam::new(color_l, &SABER_HANDLE_PHONG_PARAM, color_l, &SABER_RAY_PHONG_PARAM);
-        let saber_l = model_reg.create(saber_param);
-
-        let saber_param = SaberParam::new(color_r, &SABER_HANDLE_PHONG_PARAM, color_r, &SABER_RAY_PHONG_PARAM);
-        let saber_r = model_reg.create(saber_param);
+        let (saber_l, saber_r) = create_saber(model_reg, color_l, color_r);
 
         // Setup pointer.
 

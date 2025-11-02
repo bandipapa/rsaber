@@ -6,7 +6,7 @@ use bytemuck::{Pod, Zeroable};
 use cgmath::Matrix4;
 use wgpu::{vertex_attr_array, BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingResource, BindingType, Device, Face, FrontFace, PolygonMode, PrimitiveState, PrimitiveTopology, Sampler, SamplerBindingType, ShaderStages, TextureView, TextureSampleType, TextureViewDimension, VertexAttribute, VertexBufferLayout, VertexStepMode};
 
-use crate::indexmap::IndexMap;
+use crate::util::IndexMap;
 
 // Vertex
 
