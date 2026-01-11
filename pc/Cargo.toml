@@ -19,3 +19,7 @@ wgpu = {version = "28.0.0", default-features = false}
 winit = "0.30.11"
 
 rsaber_lib = {path = "../lib", version = "0.3.0", features = ["window"]}
+
+[features]
+
+test = ["rsaber_lib/test"]

@@ -42,3 +42,4 @@ slint-build = "1.14.1"
 
 window = []
 xr = ["dep:ash", "dep:openxr"]
+test = []

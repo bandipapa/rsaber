@@ -29,6 +29,10 @@ zip = "6.0.0"
 
 crate-type = ["cdylib"]
 
+[features]
+
+test = ["rsaber_lib/test"]
+
 [package.metadata.android]
 
 package = "com.bandipapa.rsaber"

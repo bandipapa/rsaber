@@ -64,6 +64,22 @@ impl SongInfo {
         }
     }
 
+    #[cfg(feature = "test")]
+    pub fn test(asset_mgr: AssetManagerRc) -> Self {
+        let beatmap_info = BeatmapInfo::test(Arc::clone(&asset_mgr));
+
+        Self {
+            asset_mgr,
+            dir: "dir".to_string(),
+            author: "author".to_string(),
+            title: "title".to_string(),
+            song_filename: "song_filename".to_string(),
+            bpm_selector: BPMSelector::Fixed(1.0),
+            color_schemes: Box::from([]),
+            beatmap_infos: Box::from([beatmap_info]),
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn new<S: AsRef<str>>(asset_mgr: AssetManagerRc, dir: S, author: String, title: String, sub_title: String, song_filename: String, bpm_selector: BPMSelector, color_schemes: Vec<ColorScheme>, beatmap_infos: Vec<BeatmapInfo>) -> Self {
         let space = if sub_title.is_empty() {
@@ -163,6 +179,8 @@ pub struct BeatmapInfo {
     filename: String,
     notejump_speed: f32,
     notejump_beatoffset: f32,
+    #[cfg(feature = "test")]
+    test: bool,
 }
 
 impl BeatmapInfo {
@@ -178,10 +196,33 @@ impl BeatmapInfo {
             filename,
             notejump_speed,
             notejump_beatoffset,
+            #[cfg(feature = "test")]
+            test: false,
+        }
+    }
+
+    #[cfg(feature = "test")]
+    fn test(asset_mgr: AssetManagerRc) -> Self {
+        Self {
+            asset_mgr,
+            dir: "dir".to_string(),
+            characteristic: "characteristic".to_string(),
+            difficulty: "difficulty".to_string(),
+            color_scheme_index_opt: None,
+            def_color_scheme: ColorScheme::default(),
+            filename: "filename".to_string(),
+            notejump_speed: 1.0,
+            notejump_beatoffset: 0.0,
+            test: true,
         }
     }
 
     pub fn load(&self) -> Result<Beatmap> {
+        #[cfg(feature = "test")]
+        if self.test {
+            return Beatmap::test();
+        }
+
         Beatmap::load(Arc::clone(&self.asset_mgr), &self.dir, &self.filename)
     }
 
@@ -535,6 +576,32 @@ impl Beatmap {
             },
             version => Err(Error::BuildError(format!("Unsupported beatmap version: {}", version)))
         }
+    }
+
+    #[cfg(feature = "test")]
+    fn test() -> Result<Self> {
+        let mut cut_dirs = [
+            NoteCutDir::Up,
+            NoteCutDir::Down,
+            NoteCutDir::Left,
+            NoteCutDir::Right,
+            NoteCutDir::UpLeft,
+            NoteCutDir::UpRight,
+            NoteCutDir::DownLeft,
+            NoteCutDir::DownRight,
+            NoteCutDir::Any,
+        ].into_iter().cycle();
+
+        let mut notes = Vec::new();
+
+        for i in 0..100 {
+            let note = Note::new(i as f32, 2, 1, NoteType::Right, cut_dirs.next().unwrap()).unwrap();
+            notes.push(note);
+        }
+        
+        Ok(Self {
+            notes: Box::from(notes),
+        })
     }
 
     fn new(mut notes: Vec<Note>) -> Self {

@@ -1,12 +1,15 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+#[cfg(feature = "test")]
+use std::time::Instant;
+
 use cgmath::{Angle, Deg, InnerSpace, Matrix4, Quaternion, Rotation3, Vector3};
 
 use crate::asset::AssetManagerRc;
 use crate::audio::{AudioEngineRc, AudioFileFactory, AudioFileHandle, AudioFileTimestamp};
 use crate::model::*;
-use crate::scene::{MenuParam, Scene, SceneFactory, SceneInput, SceneManager, ScenePose, create_floor, create_stats_window, create_saber};
+use crate::scene::{MenuParam, Scene, SceneFactory, SceneInput, SceneManager, ScenePose, create_floor, create_saber, create_stats_window};
 use crate::songinfo::{BPMInfo, NoteCutDir, NoteType, SongInfo};
 use crate::ui::{GameStatsWindow, UILoop, UIWindowWeak};
 use crate::util::StatsRc;
@@ -29,13 +32,17 @@ const G: f32 = 9.8; // [m/s2]
 pub struct GameParam {
     song_info: SongInfo,
     beatmap_info_index: usize, // TODO: usize or smaller?
+    #[cfg(feature = "test")]
+    test: bool,
 }
 
 impl GameParam {
-    pub fn new(song_info: SongInfo, beatmap_info_index: usize) -> Self {
+    pub fn new(song_info: SongInfo, beatmap_info_index: usize, #[cfg(feature = "test")] test: bool) -> Self {
         Self {
             song_info,
             beatmap_info_index,
+            #[cfg(feature = "test")]
+            test,
         }
     }
 }
@@ -55,7 +62,7 @@ pub struct Game {
     game_stats_window_weak: UIWindowWeak<GameStatsWindow>,
     saber_l: Rc<Saber>,
     saber_r: Rc<Saber>,
-    audio_file: AudioFileHandle,
+    audio_file_opt: Option<AudioFileHandle>,
     inner: RefCell<Inner>,
 }
 
@@ -83,6 +90,8 @@ struct CubeInfo {
 
 struct Inner {
     start: bool,
+    #[cfg(feature = "test")]
+    start_time: Instant,
     alive_objs: AliveObjs,
     cube_range_end: usize,
     prev_audio_ts: f32,
@@ -260,11 +269,25 @@ impl Game {
 
         // Setup audio.
 
-        let audio_file_factory = AudioFileFactory::new(asset_mgr, song_info.get_song_filename());
-        let audio_file = audio_engine.add(audio_file_factory);
+        #[allow(unused_assignments)]
+        #[allow(unused_mut)]
+        let mut test = false;
+        #[cfg(feature = "test")]
+        {
+            test = param.test;
+        }
+
+        let audio_file_opt = if !test {
+            let audio_file_factory = AudioFileFactory::new(asset_mgr, song_info.get_song_filename());
+            Some(audio_engine.add(audio_file_factory))
+        } else {
+            None
+        };
 
         let inner = Inner {
             start: true,
+            #[cfg(feature = "test")]
+            start_time: Instant::now(),
             alive_objs: Vec::new(),
             cube_range_end: 0,
             prev_audio_ts: 0.0, // TODO: is this correct to default it to 0?
@@ -279,13 +302,12 @@ impl Game {
             game_stats_window_weak,
             saber_l,
             saber_r,
-            audio_file,
+            audio_file_opt,
             inner: RefCell::new(inner),
         }
     }
 
-    fn update_objs(&self, audio_ts: f32, scene_input: &SceneInput) {
-        let inner = &mut *self.inner.borrow_mut();
+    fn update_objs(&self, inner: &mut Inner, audio_ts: f32, scene_input: &SceneInput) {
         let alive_objs = &mut inner.alive_objs;
 
         // Show incoming cubes.
@@ -294,18 +316,32 @@ impl Game {
         let cube_infos = &self.cube_infos;
         let cube_range_end = &mut inner.cube_range_end;
 
-        let ts_in = audio_ts + zone_info.in123_t;
+        if self.audio_file_opt.is_some() {
+            let ts_in = audio_ts + zone_info.in123_t;
 
-        for i in *cube_range_end..cube_infos.len() {
-            let cube_info = &cube_infos[i];
+            for i in *cube_range_end..cube_infos.len() {
+                let cube_info = &cube_infos[i];
 
-            if cube_info.ts <= ts_in {
-                let obj = CubeObj::new(Rc::clone(zone_info), Rc::clone(cube_info));
-                alive_objs.push(Box::new(obj));
+                if cube_info.ts <= ts_in {
+                    let obj = CubeObj::new(Rc::clone(zone_info), Rc::clone(cube_info), #[cfg(feature = "test")] false);
+                    alive_objs.push(Box::new(obj));
 
-                *cube_range_end = i + 1;
-            } else {
-                break;
+                    *cube_range_end = i + 1;
+                } else {
+                    break;
+                }
+            }
+        } else {
+            #[cfg(feature = "test")]
+            {
+                if alive_objs.is_empty() {
+                    let cube_info = &cube_infos[*cube_range_end];
+
+                    let obj = CubeObj::new(Rc::clone(zone_info), Rc::clone(cube_info), true);
+                    alive_objs.push(Box::new(obj));
+
+                    *cube_range_end += 1;
+                }
             }
         }
 
@@ -366,28 +402,44 @@ impl Game {
 
 impl Scene for Game {
     fn update(&self, scene_mgr: &SceneManager, scene_input: &SceneInput) {
-        // Start audio on first update.
-        // TODO: implement lifecycle methods?
-
-        {
-            let mut inner = self.inner.borrow_mut();
-
-            if inner.start {
-                self.audio_file.play();
-                inner.start = false;
-            }
-        }
-
-        // Update cubes.
-
+        let inner = &mut *self.inner.borrow_mut();
         let mut done = false;
 
-        match self.audio_file.get_timestamp() {
-            AudioFileTimestamp::Inactive => unreachable!(),
-            AudioFileTimestamp::Unavail => (),
-            AudioFileTimestamp::Playing(ts) => self.update_objs(ts as f32, scene_input), // TODO: or use 64 bit ts?
-            AudioFileTimestamp::Done => done = true,
-        };
+        if let Some(audio_file) = &self.audio_file_opt {
+            // Start audio on first update.
+            // TODO: implement lifecycle methods?
+
+            if inner.start {
+                audio_file.play();
+                inner.start = false;
+            }
+
+            // Update cubes.
+
+            match audio_file.get_timestamp() {
+                AudioFileTimestamp::Inactive => unreachable!(),
+                AudioFileTimestamp::Unavail => (),
+                AudioFileTimestamp::Playing(ts) => self.update_objs(inner, ts as f32, scene_input), // TODO: or use 64 bit ts?
+                AudioFileTimestamp::Done => done = true,
+            };
+        } else {
+            #[cfg(feature = "test")]
+            {
+                if inner.start {
+                    inner.start_time = Instant::now();
+                    inner.start = false;
+                }
+
+                let curr_time = Instant::now();
+                let ts = curr_time.duration_since(inner.start_time).as_secs_f32();
+
+                if !(inner.alive_objs.is_empty() && inner.cube_range_end >= self.cube_infos.len()) {
+                    self.update_objs(inner, ts, scene_input);
+                } else {
+                    done = true;
+                }
+            }
+        }
 
         // Update sabers.
 
@@ -396,24 +448,21 @@ impl Scene for Game {
 
         // TODO: Implement pause menu.
 
-        {
-            let mut inner = self.inner.borrow_mut();
-            let mut click = false;
+        let mut click = false;
 
-            if let Some(pose_l) = &scene_input.pose_l_opt {
-                click |= pose_l.get_click();
-            }
-
-            if let Some(pose_r) = &scene_input.pose_r_opt {
-                click |= pose_r.get_click();
-            }
-
-            if !inner.prev_click && click {
-                done = true;
-            }
-
-            inner.prev_click = click;
+        if let Some(pose_l) = &scene_input.pose_l_opt {
+            click |= pose_l.get_click();
         }
+
+        if let Some(pose_r) = &scene_input.pose_r_opt {
+            click |= pose_r.get_click();
+        }
+
+        if !inner.prev_click && click {
+            done = true;
+        }
+
+        inner.prev_click = click;
 
         // If we are finished, then go to menu.
 
@@ -427,79 +476,88 @@ struct CubeObj {
     zone_info: Rc<ZoneInfo>,
     cube_info: Rc<CubeInfo>,
     sliced_status: SlicedStatus,
+    #[cfg(feature = "test")]
+    test: bool,
 }
 
 #[derive(Clone, Copy)]
 enum SlicedStatus {
     WaitForAbove,
-    WaitForBelow(f32),
+    WaitForBelow(f32, f32),
     AtBelow,
 }
 
 impl CubeObj {
-    fn new(zone_info: Rc<ZoneInfo>, cube_info: Rc<CubeInfo>) -> Self {
+    fn new(zone_info: Rc<ZoneInfo>, cube_info: Rc<CubeInfo>, #[cfg(feature = "test")] test: bool) -> Self {
         cube_info.cube.set_visible(true);
 
         Self {
             zone_info,
             cube_info,
             sliced_status: SlicedStatus::WaitForAbove,
+            #[cfg(feature = "test")]
+            test,
         }
     }
 
-    fn test_touch(&self, cube_pos: &Vector3<f32>, pose: &dyn ScenePose) -> Option<f32> {
+    fn test_touch(&self, cube_pos: &Vector3<f32>, cube_rot: &Quaternion<f32>, pose: &dyn ScenePose) -> Option<f32> {
         // Short circuit calculation, if the cube and the saber are too far from each other.
 
         let saber_len = SABER_DIR.magnitude();
 
         let d = cube_pos - pose.get_pos();
-        if d.magnitude() > saber_len + 3.0_f32.sqrt() * (CUBE_SIZE / 2.0) { // TODO: precalculate?
-            return None
+        if d.magnitude() > saber_len + 3.0_f32.sqrt() * (CUBE_SIZE / 2.0) { // TODO: precalculate sqrt(3)?
+            return None;
         }
+
+        // Define hitbox. If changed, then short circuit (see above) needs to be adjusted as well.
+
+        let x_range = -(CUBE_SIZE / 2.0)..=(CUBE_SIZE / 2.0);
+        let y_range = -(CUBE_SIZE / 2.0)..=(CUBE_SIZE / 2.0);
+        let z_range = -(CUBE_SIZE / 2.0)..=(CUBE_SIZE / 2.0);
 
         // Calculate the shortest length of saber which just intersects the cube.
         // TODO: faster implementation?
 
-        let center_m = self.calc_center_m(cube_pos);        
+        let center_m = self.calc_center_m(cube_pos, cube_rot);
         let saber_pos = center_m * pose.get_pos().extend(1.0);
         let saber_dir = center_m * Matrix4::from(*pose.get_rot()) * SABER_DIR.normalize().extend(0.0);
-        let d = CUBE_SIZE / 2.0;
 
         // p = saber_pos + saber_dir * len
 
-        let calc_len = |factor, pos, dir, compare_x: bool, compare_y: bool, compare_z: bool| {
+        let calc_len = |p, pos, dir, compare_x: bool, compare_y: bool, compare_z: bool| {
             if dir != 0.0 {
-                let len = (factor * d - pos) / dir;
-                if len >= 0.0 && len <= saber_len && (
-                    (!compare_x || (-d..=d).contains(&(saber_pos.x + saber_dir.x * len))) &&
-                    (!compare_y || (-d..=d).contains(&(saber_pos.y + saber_dir.y * len))) &&
-                    (!compare_z || (-d..=d).contains(&(saber_pos.z + saber_dir.z * len)))
+                let len = (p - pos) / dir;
+                if (0.0..=saber_len).contains(&len) && (
+                    (!compare_x || x_range.contains(&(saber_pos.x + saber_dir.x * len))) &&
+                    (!compare_y || y_range.contains(&(saber_pos.y + saber_dir.y * len))) &&
+                    (!compare_z || z_range.contains(&(saber_pos.z + saber_dir.z * len)))
                 ) {
                     Some(len)
                 } else {
                     None
                 }
             } else {
-                None
+                None // TODO: Handle edge case: saber is on the plane defined by p.
             }
         };
 
         [
-            calc_len(1.0, saber_pos.x, saber_dir.x, false, true, true),
-            calc_len(-1.0, saber_pos.x, saber_dir.x, false, true, true),
-            calc_len(1.0, saber_pos.y, saber_dir.y, true, false, true),
-            calc_len(-1.0, saber_pos.y, saber_dir.y, true, false, true),
-            calc_len(1.0, saber_pos.z, saber_dir.z, true, true, false),
-            calc_len(-1.0, saber_pos.z, saber_dir.z, true, true, false)
+            calc_len(x_range.start(), saber_pos.x, saber_dir.x, false, true, true),
+            calc_len(x_range.end(), saber_pos.x, saber_dir.x, false, true, true),
+            calc_len(y_range.start(), saber_pos.y, saber_dir.y, true, false, true),
+            calc_len(y_range.end(), saber_pos.y, saber_dir.y, true, false, true),
+            calc_len(z_range.start(), saber_pos.z, saber_dir.z, true, true, false),
+            calc_len(z_range.end(), saber_pos.z, saber_dir.z, true, true, false)
         ].into_iter().flatten().reduce(f32::min)
     }
 
-    fn test_slice(&self, cube_pos: &Vector3<f32>, pose: &dyn ScenePose, len: f32, sliced_status: SlicedStatus) -> SlicedStatus {
+    fn test_slice(&self, cube_pos: &Vector3<f32>, cube_rot: &Quaternion<f32>, pose: &dyn ScenePose, len: f32, sliced_status: SlicedStatus) -> SlicedStatus {
         // Check whether the [saber handle..len] passes through the center plane.
 
         let calc_z = |len| {
-            let center_m = self.calc_center_m(cube_pos);
-            let saber_pos = pose.get_pos() + pose.get_rot() * SABER_DIR * len;
+            let center_m = self.calc_center_m(cube_pos, cube_rot);
+            let saber_pos = pose.get_pos() + pose.get_rot() * SABER_DIR.normalize() * len;
             let pos = center_m * saber_pos.extend(1.0);
             pos.z
         };
@@ -507,48 +565,63 @@ impl CubeObj {
         let mut new_sliced_status = sliced_status;
 
         match new_sliced_status {
-            SlicedStatus::WaitForAbove => if calc_z(len) > 0.0 {
-                // Remember the shortest length of saber which intersects the cube. This point on the saber
-                // has to cross cube center.
+            SlicedStatus::WaitForAbove => {
+                let z = calc_z(len);
+                if z > 0.0 {
+                    // Remember the shortest length of saber which intersects the cube. This point on
+                    // the saber has to move into the direction of the cube center.
 
-                new_sliced_status = SlicedStatus::WaitForBelow(len); 
+                    new_sliced_status = SlicedStatus::WaitForBelow(len, z); 
+                }
             },
-            SlicedStatus::WaitForBelow(len) => if calc_z(len) < 0.0 {
-                new_sliced_status = SlicedStatus::AtBelow;
+            SlicedStatus::WaitForBelow(len, z) => {
+                if z - calc_z(len) >= CUBE_SIZE / 4.0 {
+                    new_sliced_status = SlicedStatus::AtBelow;
+                }
             },
-            _ => panic!(),
+            _ => panic!("Invalid status"),
         };
 
         new_sliced_status
     }
 
-    fn calc_center_m(&self, cube_pos: &Vector3<f32>) -> Matrix4<f32> {
+    fn calc_center_m(&self, cube_pos: &Vector3<f32>, cube_rot: &Quaternion<f32>) -> Matrix4<f32> {
         // The matrix (see below) is used to transform cube center to
         // the XY plane, depending on the angle.
 
-        Matrix4::from(Quaternion::from_angle_y(Deg(-self.cube_info.angle))) * Matrix4::from_translation(-*cube_pos)
+        Matrix4::from(cube_rot.conjugate()) * Matrix4::from_translation(-*cube_pos)
     }
 }
 
 impl Obj for CubeObj {
     fn update(&mut self, audio_ts: f32, _ts_diff: f32, scene_input: &SceneInput, game_stats: &mut GameStats) -> UpdateResult {
+        #[allow(unused_assignments)]
+        #[allow(unused_mut)]
+        let mut test = false;
+        #[cfg(feature = "test")]
+        {
+            test = self.test;
+        }
+
         // Hide outgoing cube.
 
         let zone_info = &self.zone_info;
         let cube_info = &self.cube_info;
 
-        let ts_out = audio_ts - zone_info.out_t;
+        if !test {
+            let ts_out = audio_ts - zone_info.out_t;
 
-        if cube_info.ts < ts_out {
-            cube_info.cube.set_visible(false);
-            return UpdateResult::Remove;
+            if cube_info.ts < ts_out {
+                cube_info.cube.set_visible(false);
+                return UpdateResult::Remove;
+            }
         }
 
         // Update position.
         // TODO: shorter rotation time? z_base is fine.
         // TODO: always display cubes at z=0 and then move them up?
 
-        let ts = cube_info.ts - audio_ts;
+        let ts = if !test { cube_info.ts - audio_ts } else { 0.0 };
 
         let (y, z_base, angle) = if ts <= 0.0 {
             (ts * zone_info.out_v, CUBE_FLOOR, cube_info.angle)
@@ -577,13 +650,18 @@ impl Obj for CubeObj {
 
         // Do hit detection.
 
-        if let Some(pose) = pose_opt && let Some(len) = self.test_touch(&pos, pose) {
+        if let Some(pose) = pose_opt && let Some(len) = self.test_touch(&pos, &rot, pose) {
             let mut sliced = false;
 
             if cube_info.any {
+                // Once the saber touches cube, the cube is becoming sliced.
+
                 sliced = true;
             } else {
-                self.sliced_status = self.test_slice(&pos, pose, len, self.sliced_status);
+                // The saber should stay in contact with the cube (see test_touch above),
+                // while the slicing test is still in progress.
+                
+                self.sliced_status = self.test_slice(&pos, &rot, pose, len, self.sliced_status);
                 if matches!(self.sliced_status, SlicedStatus::AtBelow) {
                     sliced = true;
                 }

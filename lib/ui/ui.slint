@@ -17,7 +17,10 @@ export component SearchWindow inherits Window {
     default-font-size: Const.default-font-size;
     background: Const.border-color;
 
+    in property<bool> test_visible;
+
     callback start();
+    callback test();
 
     VerticalLayout { 
         Text {
@@ -28,7 +31,7 @@ export component SearchWindow inherits Window {
             height: Const.title-height;
         }
 
-        Rectangle {
+        rect := Rectangle {
             background: Const.content-background;
             border-color: Const.border-color;
             border-width: Const.border-width;
@@ -40,7 +43,18 @@ export component SearchWindow inherits Window {
                 clicked => {
                     root.start();
                 }
-            }        
+            }
+
+            Button {
+                text: "Test Mode";
+                visible: root.test_visible;
+                x: rect.width - 150px;
+                y: rect.height - 50px;
+                        
+                clicked => {
+                    root.test();
+                }
+            }
         }
     }
 }

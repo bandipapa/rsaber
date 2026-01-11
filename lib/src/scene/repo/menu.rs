@@ -8,7 +8,7 @@ use cgmath::{Deg, Quaternion, Rotation3, Vector3};
 use crate::asset::AssetManagerRc;
 use crate::audio::{AudioEngineRc, AudioFileFactory, AudioFileHandle, AudioFileTimestamp};
 use crate::model::*;
-use crate::scene::{GameParam, Scene, SceneFactory, SceneInput, SceneManager, create_floor, create_stats_window, create_saber};
+use crate::scene::{GameParam, Scene, SceneFactory, SceneInput, SceneManager, create_floor, create_saber, create_stats_window};
 use crate::songinfo::{SongInfo, ColorScheme};
 use crate::ui::{AboutWindow, PoweredByWindow, SearchWindow, UILoop};
 use crate::util::StatsRc;
@@ -37,7 +37,7 @@ pub struct Menu {
     asset_mgr: AssetManagerRc,
     audio_engine: AudioEngineRc,
     about_window: Rc<Window>,
-    search_window_rx: Receiver<()>,
+    search_window_rx: Receiver<bool>,
     search_window: Rc<Window>,
     poweredby_window: Rc<Window>,
     saber_l: Rc<Saber>,
@@ -70,7 +70,18 @@ impl Menu {
 
         let window_param = WindowParam::new(1000, 500, move || {
             let window = SearchWindow::new().unwrap();
-            window.on_start(move || search_window_tx.send(()).unwrap());
+            window.set_test_visible(cfg!(feature = "test"));
+
+            window.on_start({
+                let search_window_tx = search_window_tx.clone();
+                move || search_window_tx.send(false).unwrap()
+            });
+
+            // TODO: Add support for https://github.com/BeatLeader/BS-Open-Replay ?
+            #[cfg(feature = "test")]
+            window.on_test({
+                move || search_window_tx.send(true).unwrap()
+            });
 
             window
         });
@@ -159,9 +170,21 @@ impl Scene for Menu {
         // Poll receiver.
 
         match self.search_window_rx.try_recv() {
-            Ok(_) => {
-                let song_info = SongInfo::load(Arc::clone(&self.asset_mgr), "demo").unwrap();
-                scene_mgr.load(GameParam::new(song_info, 1));
+            Ok(test) => {
+                let (song_info, beatmap_info_index) = if !test {
+                    (SongInfo::load(Arc::clone(&self.asset_mgr), "demo").unwrap(), 1)
+                } else {
+                    #[allow(unused_assignments)]
+                    #[allow(unused_mut)]
+                    let mut song_info_opt = None;
+                    #[cfg(feature = "test")]
+                    {
+                        song_info_opt = Some((SongInfo::test(Arc::clone(&self.asset_mgr)), 0));
+                    }
+                    song_info_opt.unwrap()
+                };
+
+                scene_mgr.load(GameParam::new(song_info, beatmap_info_index, #[cfg(feature = "test")] test));
             },
             Err(e) => {
                 assert!(matches!(e, TryRecvError::Empty));
