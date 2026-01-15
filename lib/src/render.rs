@@ -116,7 +116,7 @@ impl Render {
         // Create scene manager and load start scene.
 
         let scene_mgr = SceneManager::new(Arc::clone(&asset_mgr), Rc::clone(&output_info), Arc::clone(&stats), uni_bg_layout, audio_engine);
-        scene_mgr.load(MenuParam::new());
+        scene_mgr.load(MenuParam::new()).expect("Unable to load scene");
 
         let inner = Inner {
             instant: Instant::now(),

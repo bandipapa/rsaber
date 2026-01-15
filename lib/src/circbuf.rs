@@ -1,5 +1,4 @@
-// TODO: Convert it to lockless (e.g. to not block audio mixer thread)
-// and use thread park/unpark on sender-side?
+// TODO: Convert it to lockless
 use std::iter;
 use std::sync::Arc;
 
@@ -68,16 +67,15 @@ impl<T: Copy> Sender<T> {
                 return false;
             }
 
-            todo = [inner_buf_len - inner.filled,     // available space in circ buffer
-                    todo].into_iter().min().unwrap(); // available data in source buffer
+            todo = (inner_buf_len - inner.filled).min( // available space in circ buffer
+                    todo);                             // available data in source buffer
             assert!(todo > 0);
 
             inner.filled += todo;
 
             while todo > 0 {
                 let inner_send_i = inner.send_i;
-                let copy = [inner_buf_len - inner_send_i, // can be copied without wrap
-                                   todo].into_iter().min().unwrap();
+                let copy = (inner_buf_len - inner_send_i).min(todo); // can be copied without wrap
                 assert!(copy > 0);
 
                 let inner_buf_chunk = &mut inner.buf[inner_send_i..inner_send_i + copy];
@@ -138,8 +136,8 @@ impl<T: Copy> Receiver<T> {
 
             let mut inner = self.inner_muco.cond.wait_while(inner, |inner| inner.send_alive && inner.filled == 0).unwrap(); // While empty, we need to wait.
 
-            todo = [inner.filled,                     // available data in circ buffer
-                    todo].into_iter().min().unwrap(); // available space in destination buffer
+            todo = inner.filled.min( // available data in circ buffer
+                   todo);            // available space in destination buffer
 
             // If the sender has been dropped, we can still consume remaining data.
 
@@ -152,8 +150,7 @@ impl<T: Copy> Receiver<T> {
 
             while todo > 0 {
                 let inner_recv_i = inner.recv_i;
-                let copy = [inner_buf_len - inner_recv_i, // can be copied without wrap
-                                   todo].into_iter().min().unwrap();
+                let copy = (inner_buf_len - inner_recv_i).min(todo); // can be copied without wrap
                 assert!(copy > 0);
 
                 let buf_chunk = &mut buf[i..i + copy];

@@ -7,11 +7,13 @@ use std::time::Instant;
 use cgmath::{Angle, Deg, InnerSpace, Matrix4, Quaternion, Rotation3, Vector3};
 
 use crate::asset::AssetManagerRc;
-use crate::audio::{AudioEngineRc, AudioFileFactory, AudioFileHandle, AudioFileTimestamp};
+use crate::audio::{AudioEngineRc, AudioFile, AudioFileHandle, AudioTimestamp};
 use crate::model::*;
+use crate::net::NetManager;
 use crate::scene::{MenuParam, Scene, SceneFactory, SceneInput, SceneManager, ScenePose, create_floor, create_saber, create_stats_window};
 use crate::songinfo::{BPMInfo, NoteCutDir, NoteType, SongInfo};
-use crate::ui::{GameStatsWindow, UILoop, UIWindowWeak};
+use crate::ui::{GameStatsWindow, UILoop};
+use crate::ui::slintimpl;
 use crate::util::StatsRc;
 
 const CUBE_SIZE: f32 = 0.5; // [m]
@@ -30,6 +32,7 @@ const ZONE_OUT_DIST: f32 = 15.0; // [m]
 const G: f32 = 9.8; // [m/s2]
 
 pub struct GameParam {
+    asset_mgr: AssetManagerRc,
     song_info: SongInfo,
     beatmap_info_index: usize, // TODO: usize or smaller?
     #[cfg(feature = "test")]
@@ -37,8 +40,9 @@ pub struct GameParam {
 }
 
 impl GameParam {
-    pub fn new(song_info: SongInfo, beatmap_info_index: usize, #[cfg(feature = "test")] test: bool) -> Self {
+    pub fn new(asset_mgr: AssetManagerRc, song_info: SongInfo, beatmap_info_index: usize, #[cfg(feature = "test")] test: bool) -> Self {
         Self {
+            asset_mgr,
             song_info,
             beatmap_info_index,
             #[cfg(feature = "test")]
@@ -49,9 +53,10 @@ impl GameParam {
 
 impl SceneFactory for GameParam {
     type Scene = Game;
+    type Error = String;
 
-    fn load(self, asset_mgr: AssetManagerRc, model_reg: &mut ModelRegistry, stats: StatsRc, audio_engine: AudioEngineRc, ui_loop: &UILoop) -> Self::Scene {
-        Game::new(self, asset_mgr, model_reg, stats, audio_engine, ui_loop)
+    fn load(self, _asset_mgr: AssetManagerRc, model_reg: &mut ModelRegistry, stats: StatsRc, audio_engine: AudioEngineRc, ui_loop: &UILoop, _net_manager: &NetManager) -> Result<Self::Scene, Self::Error> {
+        Game::new(self, model_reg, stats, audio_engine, ui_loop)
     }
 }
 
@@ -59,10 +64,10 @@ pub struct Game {
     ui_loop: UILoop,
     zone_info: Rc<ZoneInfo>,
     cube_infos: Box<[Rc<CubeInfo>]>,
-    game_stats_window_weak: UIWindowWeak<GameStatsWindow>,
+    game_stats_window_weak: slintimpl::Weak<GameStatsWindow>,
     saber_l: Rc<Saber>,
     saber_r: Rc<Saber>,
-    audio_file_opt: Option<AudioFileHandle>,
+    audio_info_opt: Option<AudioInfo>,
     inner: RefCell<Inner>,
 }
 
@@ -86,6 +91,11 @@ struct CubeInfo {
     angle: f32,
     any: bool,
     cube: Rc<Cube>,
+}
+
+struct AudioInfo {
+    handle: AudioFileHandle,
+    ts: AudioTimestamp,
 }
 
 struct Inner {
@@ -113,7 +123,7 @@ enum UpdateResult {
 }
 
 impl Game {
-    fn new(param: GameParam, asset_mgr: AssetManagerRc, model_reg: &mut ModelRegistry, stats: StatsRc, audio_engine: AudioEngineRc, ui_loop: &UILoop) -> Self {
+    fn new(param: GameParam, model_reg: &mut ModelRegistry, stats: StatsRc, audio_engine: AudioEngineRc, ui_loop: &UILoop) -> Result<Self, String> {
         let song_info = param.song_info;
 
         // Determine color scheme.
@@ -166,12 +176,12 @@ impl Game {
 
         // Setup cubes.
 
-        let bpm_info = song_info.get_bpm_info().expect("Unable to load bpm info");
+        let bpm_info = song_info.get_bpm_info().map_err(|e| format!("Unable to load bpm info: {:?}", e))?; // TODO: instead of debug, use display trait for formatting error msg?
 
         let body_phong_param = PhongParam::new(0.1, 0.3, 0.6, 16.0);
         let symbol_phong_param = PhongParam::new(0.5, 0.3, 0.6, 16.0);
 
-        let beatmap = beatmap_info.load().expect("Unable to load beatmap");
+        let beatmap = beatmap_info.load().map_err(|e| format!("Unable to load beatmap: {:?}", e))?; // TODO: instead of debug, use display trait for formatting error msg?
         let cube_infos = Box::from_iter(beatmap.get_notes().iter().filter_map(|note| {
             let bpm_pos = note.get_bpm_pos();
 
@@ -277,9 +287,18 @@ impl Game {
             test = param.test;
         }
 
-        let audio_file_opt = if !test {
-            let audio_file_factory = AudioFileFactory::new(asset_mgr, song_info.get_song_filename());
-            Some(audio_engine.add(audio_file_factory))
+        let audio_info_opt = if !test {
+            let asset_file = param.asset_mgr.open(song_info.get_song_filename()).map_err(|e| format!("Unable to open audio file: {:?}", e))?; // TODO: instead of debug, use display trait for formatting error msg?
+
+            let (input, handle) = AudioFile::new(asset_file);
+            let ts = audio_engine.add(input);
+
+            let audio_info = AudioInfo {
+                handle,
+                ts,
+            };
+
+            Some(audio_info)
         } else {
             None
         };
@@ -295,16 +314,16 @@ impl Game {
             game_stats: GameStats::new(cube_infos.len().try_into().unwrap()),
         };
         
-        Self {
+        Ok(Self {
             ui_loop: ui_loop.clone(),
             zone_info,
             cube_infos,
             game_stats_window_weak,
             saber_l,
             saber_r,
-            audio_file_opt,
+            audio_info_opt,
             inner: RefCell::new(inner),
-        }
+        })
     }
 
     fn update_objs(&self, inner: &mut Inner, audio_ts: f32, scene_input: &SceneInput) {
@@ -316,7 +335,7 @@ impl Game {
         let cube_infos = &self.cube_infos;
         let cube_range_end = &mut inner.cube_range_end;
 
-        if self.audio_file_opt.is_some() {
+        if self.audio_info_opt.is_some() {
             let ts_in = audio_ts + zone_info.in123_t;
 
             for i in *cube_range_end..cube_infos.len() {
@@ -375,10 +394,10 @@ impl Game {
         if game_stats.is_changed() {
             self.ui_loop.add_callback({
                 let stats_inner = game_stats.get_inner();
-                let window_weak = self.game_stats_window_weak.cloned();
+                let window_weak = self.game_stats_window_weak.clone();
 
                 move || { // TODO: use slint struct?
-                    let window = window_weak.upgrade().unwrap();
+                    let window = window_weak.unwrap();
 
                     window.set_count(stats_inner.count.try_into().unwrap());
                     window.set_total(stats_inner.total.try_into().unwrap());
@@ -405,23 +424,22 @@ impl Scene for Game {
         let inner = &mut *self.inner.borrow_mut();
         let mut done = false;
 
-        if let Some(audio_file) = &self.audio_file_opt {
+        if let Some(audio_info) = &self.audio_info_opt {
             // Start audio on first update.
             // TODO: implement lifecycle methods?
 
             if inner.start {
-                audio_file.play();
+                audio_info.handle.play();
                 inner.start = false;
             }
 
             // Update cubes.
 
-            match audio_file.get_timestamp() {
-                AudioFileTimestamp::Inactive => unreachable!(),
-                AudioFileTimestamp::Unavail => (),
-                AudioFileTimestamp::Playing(ts) => self.update_objs(inner, ts as f32, scene_input), // TODO: or use 64 bit ts?
-                AudioFileTimestamp::Done => done = true,
-            };
+            if audio_info.handle.at_eof() {
+                done = true;
+            } else if let Some(ts) = audio_info.ts.get_timestamp() {
+                self.update_objs(inner, ts as f32, scene_input); // TODO: or use 64 bit ts?
+            }
         } else {
             #[cfg(feature = "test")]
             {
@@ -433,7 +451,7 @@ impl Scene for Game {
                 let curr_time = Instant::now();
                 let ts = curr_time.duration_since(inner.start_time).as_secs_f32();
 
-                if !(inner.alive_objs.is_empty() && inner.cube_range_end >= self.cube_infos.len()) {
+                if !(inner.alive_objs.is_empty() && inner.cube_range_end == self.cube_infos.len()) {
                     self.update_objs(inner, ts, scene_input);
                 } else {
                     done = true;
@@ -467,7 +485,7 @@ impl Scene for Game {
         // If we are finished, then go to menu.
 
         if done {
-            scene_mgr.load(MenuParam::new());
+            scene_mgr.load(MenuParam::new()).expect("Unable to load scene");
         }
     }
 }
@@ -580,7 +598,7 @@ impl CubeObj {
                 }
             },
             _ => panic!("Invalid status"),
-        };
+        }
 
         new_sliced_status
     }

@@ -42,7 +42,7 @@ fn android_main(app: AndroidApp) {
                     }
                 },
                 _ => (),
-            };
+            }
         });
 
         if terminate {

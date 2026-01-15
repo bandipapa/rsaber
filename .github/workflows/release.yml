@@ -14,7 +14,7 @@ jobs:
     runs-on: windows-latest
 
     env:
-      ANDROID_SDK_LEVEL: 32
+      ANDROID_SDK_LEVEL: 34
 
     permissions:
       contents: write

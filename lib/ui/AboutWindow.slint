@@ -1,0 +1,42 @@
+import { Const } from "Const.slint";
+import { WindowBase } from "WindowBase.slint";
+
+export component AboutWindow inherits WindowBase {
+    default-font-family: Const.default-font-family;
+    default-font-size: Const.default-font-size;
+    background: Const.border-color;
+
+    in property<string> version;
+
+    VerticalLayout { 
+        Text {
+            text: "About";
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            color: Const.title-color;
+            height: Const.title-height;
+        }
+
+        rect := Rectangle {
+            background: Const.content-background;
+            border-color: Const.border-color;
+            border-width: Const.border-width;
+            border-radius: 2 * Const.border-width;
+
+            VerticalLayout {
+                width: rect.width - 2 * rect.border-width;
+                height: rect.height - 2 * rect.border-width;
+                alignment: space-evenly;
+
+                Image {
+                    source: @image-url("image/logo.png");
+                }
+
+                Text {
+                    text: root.version;
+                    horizontal-alignment: center;
+                }
+            }
+        }
+    }
+}

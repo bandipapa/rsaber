@@ -2,9 +2,11 @@ use std::cell::Cell;
 use std::iter;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
+
+use atomic::{Atomic, Ordering};
+use bytemuck::NoUninit;
 
 use cpal::{BufferSize, Device, SampleFormat, SampleRate, Stream, StreamConfig};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -12,23 +14,21 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 const CHANNELS: u16 = 2;
 const MIN_SAMPLE_RATE: u32 = 44100;
 const LATENCY: f32 = 0.01; // [s]
-const INACTIVE: u64 = u64::MAX; // As we use atomic, we need a special sentinel value.
 
-pub trait AudioFactory {
-    type Source: AudioSource + Send + 'static;
-    type Handle;
+pub trait AudioInput {
+    type Source: AudioSource + Send;
 
-    fn source_factory_and_handle(self, channels: u16, sample_rate: u32, subr: AudioSubr) -> (impl FnOnce() -> Self::Source + Send + 'static, Self::Handle);
+    fn build(self, channels: u16, sample_rate: u32) -> Self::Source;
 }
 
 pub trait AudioSource {
-    fn get_samples(&self, buf: &mut [f32]) -> AudioSourceState;
+    fn get_samples(&mut self, buf: &mut [f32]) -> AudioSourceState;
 }
 
 pub enum AudioSourceState {
-    Inactive,
+    Paused,
     Playing,
-    Done,
+    Drop,
 }
 
 pub type AudioEngineRc = Rc<AudioEngine>;
@@ -40,15 +40,17 @@ pub struct AudioEngine {
     playing: Cell<bool>,
 }
 
-type WorkerMessage = (Arc<AtomicU64>, Box<dyn FnOnce() -> Box<dyn AudioSource + Send + 'static> + Send + 'static>);
+type WorkerMessage = (Box<dyn FnOnce() -> Box<dyn AudioSource + Send> + Send>, AudioPosAtomic);
+
+type InnerMutex = Arc<Mutex<Inner>>;
 
 struct Inner { // TODO: We have only a single field, keep struct?
     source_infos: Vec<SourceInfo>,
 }
 
 struct SourceInfo {
-    start_pos: Arc<AtomicU64>,
-    source: Box<dyn AudioSource + Send + 'static>,
+    source: Box<dyn AudioSource + Send>,
+    pos_atomic: AudioPosAtomic,
 }
 
 impl AudioEngine {
@@ -101,18 +103,18 @@ impl AudioEngine {
         }
     }
 
-    fn build_stream(device: &Device, config: &StreamConfig, inner_mutex: Arc<Mutex<Inner>>) -> Stream {
+    fn build_stream(device: &Device, config: &StreamConfig, inner_mutex: InnerMutex) -> Stream {
         // We don't want to make heap allocation in the mixer thread, so allocate source_buf early.
         // TODO: how can we determine the size of the buffer, since cpal can't guarantee requested
         // buffer size?
 
-        let mut source_buf = Vec::from_iter(iter::repeat_n(0.0, CHANNELS as usize * config.sample_rate.0 as usize));
+        let sample_rate = config.sample_rate.0;
+        let mut source_buf = Vec::from_iter(iter::repeat_n(0.0, CHANNELS as usize * sample_rate as usize));
+        let mut frame_count = 0_u64;
 
         // Build output stream.
 
-        let mut sample_count = 0_u64;
-
-        device.build_output_stream(config, move |buf: &mut [f32], _| { // TODO: use simd for mixing?
+        device.build_output_stream(config, move |buf: &mut [f32], _| { // TODO: use simd for processing
             let buf_len = buf.len();
             assert!(buf_len <= source_buf.len());
             let source_buf_sl = &mut source_buf.as_mut_slice()[..buf_len];
@@ -123,59 +125,83 @@ impl AudioEngine {
             let source_infos = &mut inner.source_infos;
             let mut i = 0;
 
+            let frame_count_pause = frame_count + sample_rate as u64;
+
             while i < source_infos.len() {
-                let source_info = &source_infos[i];
+                let source_info = &mut source_infos[i];
+                let mut pos = source_info.pos_atomic.load(Ordering::Relaxed);
 
-                let start_pos = &source_info.start_pos;
-                let start_pos_val = start_pos.load(Ordering::Relaxed);
+                // Notes:
+                // - We don't know the exact latency between the data_callback and
+                //   actual audio output.
+                // - However, we can assume that stream.get_timestamp() lags behind
+                //   frame_count.
+                // - We are calculating AudioPos.start/end, which gets compared to
+                //   stream.get_timestamp() (see AudioTimestamp.get_timestamp()).
 
-                match source_info.source.get_samples(source_buf_sl) {                        
-                    AudioSourceState::Inactive => {
-                        assert!(start_pos_val == INACTIVE); // Once Playing, can't go back to Inactive.
-                        i += 1;
-                    },
-                    AudioSourceState::Playing => {
-                        if start_pos_val == INACTIVE {
-                            start_pos.store(sample_count, Ordering::Relaxed);
-                        }
+                // If the source is paused, then don't call get_samples again until
+                // pos.end has been reached, otherwise it would cause incorrect timestamp
+                // calculation (we are maintaining a single AudioPos only).
+                // TODO: Usage of frame_count_pause is just a code simplification, the
+                // correct solution would be to use stream.get_timestamp().
+                if pos.end != u64::MAX && pos.end > frame_count_pause {
+                    i += 1;
+                } else {
+                    match source_info.source.get_samples(source_buf_sl) {                        
+                        AudioSourceState::Paused => {
+                            if pos.end == u64::MAX {
+                                pos.end = frame_count;
+                                source_info.pos_atomic.store(pos, Ordering::Relaxed);
+                            }
 
-                        for (src_sample, dst_sample) in source_buf_sl.iter().zip(buf.iter_mut()) {
-                            *dst_sample += *src_sample;
-                        }
+                            i += 1;
+                        },
+                        AudioSourceState::Playing => {
+                            if pos.end != u64::MAX {
+                                pos.offset += pos.end - pos.start;
+                                pos.start = frame_count;
+                                pos.end = u64::MAX;
+                                source_info.pos_atomic.store(pos, Ordering::Relaxed);
+                            }
 
-                        i += 1;
-                    },
-                    AudioSourceState::Done => {
-                        source_infos.swap_remove(i); // TODO: more opimized removal?
-                    },
-                };
-            }
+                            // TODO: scale output depending on the number of active sources.
+                            for (src_sample, dst_sample) in source_buf_sl.iter().zip(buf.iter_mut()) {
+                                *dst_sample += *src_sample;
+                            }
 
-            if i > 1 {
-                for sample in buf.iter_mut() {
-                    *sample /= i as f32;
+                            i += 1;
+                        },
+                        AudioSourceState::Drop => {
+                            source_infos.swap_remove(i); // TODO: more optimized removal?
+                        },
+                    }
                 }
             }
 
-            sample_count += buf_len as u64 / CHANNELS as u64;
+            frame_count += buf_len as u64 / CHANNELS as u64;
         },
         |_| {
         },
         None).expect("Unable to build stream")
     }
 
-    pub fn add<F: AudioFactory>(&self, factory: F) -> F::Handle {
-        let start_pos = Arc::new(AtomicU64::new(INACTIVE));
-        let subr = AudioSubr::new(self.config.sample_rate.0, Rc::clone(&self.stream), Arc::clone(&start_pos));
-
-        // Execute source_factory on the worker thread to avoid blocking of
+    pub fn add<T: AudioInput + Send + 'static>(&self, input: T) -> AudioTimestamp {
+        // Execute build_func on the worker thread to avoid blocking of
         // the render thread. For example: before playing, the factory function is
         // doing some buffering.
 
-        let (source_factory, handle) = factory.source_factory_and_handle(CHANNELS, self.config.sample_rate.0, subr);
-        self.worker_tx.send((start_pos, Box::new(move || Box::new(source_factory())))).expect("Unable to send");
+        let sample_rate = self.config.sample_rate.0;
 
-        handle
+        let pos = AudioPos {
+            start: 0,
+            end: 0,
+            offset: 0,
+        };
+        let pos_atomic = Arc::new(Atomic::new(pos));
+
+        self.worker_tx.send((Box::new(move || Box::new(input.build(CHANNELS, sample_rate))), Arc::clone(&pos_atomic))).unwrap();
+
+        AudioTimestamp::new(sample_rate, Rc::clone(&self.stream), pos_atomic)
     }
 
     pub fn start(&self) {
@@ -192,16 +218,16 @@ impl AudioEngine {
         }
     }
 
-    fn worker_impl(inner_mutex: Arc<Mutex<Inner>>, worker_rx: Receiver<WorkerMessage>) {
+    fn worker_impl(inner_mutex: InnerMutex, worker_rx: Receiver<WorkerMessage>) {
         loop {
-            let (start_pos, source_factory) = match worker_rx.recv() {
+            let (build_func, pos_atomic) = match worker_rx.recv() {
                 Ok(msg) => msg,
                 Err(_) => break,
             };
 
             let source_info = SourceInfo {
-                start_pos,
-                source: source_factory(),
+                source: build_func(),
+                pos_atomic,
             };
 
             let mut inner = inner_mutex.lock().unwrap();
@@ -210,34 +236,44 @@ impl AudioEngine {
     }
 }
 
-pub struct AudioSubr {
-    sample_rate: u32,
+pub struct AudioTimestamp {
+    sample_rate: f64,
     stream: Rc<Stream>,
-    start_pos: Arc<AtomicU64>,
+    pos_atomic: AudioPosAtomic,
 }
 
-impl AudioSubr {
-    fn new(sample_rate: u32, stream: Rc<Stream>, start_pos: Arc<AtomicU64>) -> Self {
+impl AudioTimestamp {
+    fn new(sample_rate: u32, stream: Rc<Stream>, pos_atomic: AudioPosAtomic) -> Self {
         Self {
-            sample_rate,
+            sample_rate: sample_rate.into(),
             stream,
-            start_pos,
+            pos_atomic,
         }
     }
 
     pub fn get_timestamp(&self) -> Option<f64> {
         let stream_ts = self.stream.get_timestamp()?;
+        let pos = self.pos_atomic.load(Ordering::Relaxed);
 
-        let start_pos_val = self.start_pos.load(Ordering::Relaxed);
-        if start_pos_val == INACTIVE {
-            return None;
-        }
+        let start_ts = pos.start as f64 / self.sample_rate;
+        let end_ts = pos.end as f64 / self.sample_rate;
 
-        let ts = stream_ts - start_pos_val as f64 / self.sample_rate as f64; // TODO: compute start_ts in the mixer thread, so we don't need division by sample_rate?
-        if ts < 0.0 { // Source is not started yet in the mixer thread.
-            None
+        let ts = if stream_ts < end_ts {
+            0.0_f64.max(stream_ts - start_ts) // If stream_ts < start_ts: 0, otherwise increasing.
         } else {
-            Some(ts)
-        }
+            end_ts - start_ts // If stream_ts >= end_ts: not changing.
+        };
+
+        Some(pos.offset as f64 / self.sample_rate + ts)
     }
+}
+
+type AudioPosAtomic = Arc<Atomic<AudioPos>>;
+
+#[repr(C)]
+#[derive(Clone, Copy, NoUninit)]
+struct AudioPos {
+    start: u64,
+    end: u64,
+    offset: u64,
 }

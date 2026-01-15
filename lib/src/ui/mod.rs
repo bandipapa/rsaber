@@ -1,3 +1,5 @@
+pub mod slintimpl;
+
 mod subr;
 pub use subr::*;
 

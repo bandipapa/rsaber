@@ -1,14 +1,14 @@
 use std::cell::RefCell;
 
 use cgmath::{InnerSpace, Matrix4, Quaternion, Vector3};
-use slint::ComponentHandle;
 use wgpu::{BufferUsages, Device, Extent3d, FilterMode, SamplerDescriptor, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages};
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
 
 use crate::asset::AssetManagerRc;
 use crate::model::{InstShaderImplType, InstShaderType, InstWindowBuf, Mesh, Model, ModelFactory, ModelHandle, PrimitiveStateType, SamplerId, Submesh, TextureId, VertexPos, VertexShaderType, SABER_DIR};
 use crate::scene::ScenePose;
-use crate::ui::{SlintComponentHandle, UIEvent, UIManagerRc, UIWindow, UIWindowWeak};
+use crate::ui::{UIEvent, UIManagerRc, UIWindow};
+use crate::ui::slintimpl;
 
 const SIZE: f32 = 0.5;
 
@@ -18,7 +18,7 @@ pub struct WindowParam<F> {
     func: F,
 }
 
-impl<F: FnOnce() -> C + Send + 'static, C: SlintComponentHandle + 'static> WindowParam<F> {
+impl<F: FnOnce() -> C + Send + 'static, C: slintimpl::ComponentHandle + 'static> WindowParam<F> {
     pub fn new(width: u32, height: u32, func: F) -> Self {
         assert!(width > 0 && height > 0);
 
@@ -30,7 +30,7 @@ impl<F: FnOnce() -> C + Send + 'static, C: SlintComponentHandle + 'static> Windo
     }    
 }
 
-impl<F: FnOnce() -> C + Send + 'static, C: SlintComponentHandle + 'static> ModelFactory for WindowParam<F> {
+impl<F: FnOnce() -> C + Send + 'static, C: slintimpl::ComponentHandle + 'static> ModelFactory for WindowParam<F> {
     type Model = Window;
 
     fn get_name() -> &'static str {
@@ -40,22 +40,21 @@ impl<F: FnOnce() -> C + Send + 'static, C: SlintComponentHandle + 'static> Model
     fn get_mesh(_asset_mgr: AssetManagerRc, device: &Device) -> Mesh {
         // We don't have .obj file for window, calculate mesh.
 
-        let mut vertexes = Vec::new();
-        let mut indexes: Vec<u16> = Vec::new();
+        let vertexes = [
+            VertexPos { pos: [-SIZE, 0.0, -SIZE] },
+            VertexPos { pos: [SIZE, 0.0, -SIZE] },
+            VertexPos { pos: [-SIZE, 0.0, SIZE] },
+            VertexPos { pos: [SIZE, 0.0, SIZE] },
+        ];
 
-        // Create quad.
-
-        vertexes.push(VertexPos { pos: [-SIZE, 0.0, -SIZE] });
-        vertexes.push(VertexPos { pos: [SIZE, 0.0, -SIZE] });
-        vertexes.push(VertexPos { pos: [-SIZE, 0.0, SIZE] });
-        vertexes.push(VertexPos { pos: [SIZE, 0.0, SIZE] });
-
-        indexes.push(0);
-        indexes.push(1);
-        indexes.push(2);
-        indexes.push(1);
-        indexes.push(3);
-        indexes.push(2);
+        let indexes: [u16; 6] = [
+            0,
+            1,
+            2,
+            1,
+            3,
+            2,
+        ];
 
         let submesh = Submesh::new(0, indexes.len() as u32, 0, PrimitiveStateType::TriangleList, InstShaderType::Window); // 0
 
@@ -98,7 +97,7 @@ struct Inner {
 }
 
 impl Window {
-    fn new<F: FnOnce() -> C + Send + 'static, C: SlintComponentHandle + 'static>(param: WindowParam<F>, handle: ModelHandle, device: &Device, inst_sh_impls: &mut [InstShaderImplType], ui_manager: UIManagerRc) -> Self {
+    fn new<F: FnOnce() -> C + Send + 'static, C: slintimpl::ComponentHandle + 'static>(param: WindowParam<F>, handle: ModelHandle, device: &Device, inst_sh_impls: &mut [InstShaderImplType], ui_manager: UIManagerRc) -> Self {
         let inst_window = if let InstShaderImplType::Window(inst_window) = &mut inst_sh_impls[0] {
             inst_window
         } else {
@@ -166,12 +165,13 @@ impl Window {
         self.inner.borrow_mut().rot = *rot;
     }
 
-    pub fn as_weak<C: ComponentHandle + 'static>(&self) -> UIWindowWeak<C> {
-        self.ui_window.as_weak()
-    }
-
     pub fn intersect(&self, pose: &dyn ScenePose) -> Option<(f32, f32, f32)> { // TODO: introduce struct for return type?
-        // TODO: Test for window visibility.
+        // Test for visibility.
+
+        if !self.handle.get_visible(0) {
+            return None;
+        }
+
         // Calculate line-plane intersection, see https://en.wikipedia.org/wiki/Line%E2%80%93plane_intersection .
 
         let inner = self.inner.borrow();
@@ -211,6 +211,10 @@ impl Window {
         } else {
             None
         }
+    }
+
+    pub fn as_weak<C: slintimpl::ComponentHandle + 'static>(&self) -> slintimpl::Weak<C> {
+        self.ui_window.as_weak()
     }
 
     pub fn handle_event(&self, event: UIEvent) {

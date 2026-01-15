@@ -7,7 +7,7 @@ use pollster::FutureExt;
 use wgpu::SurfaceTarget;
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
@@ -15,7 +15,7 @@ use winit::window::{Window, WindowId};
 use rsaber_lib::{APP_NAME, Main};
 use rsaber_lib::asset::EmbedAssetManager;
 use rsaber_lib::output::{WindowBegin, WindowOutput};
-use rsaber_lib::scene::{SceneInput, ScenePose};
+use rsaber_lib::scene::{SceneInput, ScenePose, ScenePoseScroll};
 use rsaber_lib::util::Stats;
 
 const COMMENT: &str = "You can use keys w-a-s-d to move, z-x to change elevation, r to reset view and arrow keys to rotate camera. Interaction with UI controls can be done with mouse.";
@@ -24,6 +24,7 @@ const MIN_SIZE: PhysicalSize<u32> = PhysicalSize { width: 800, height: 600 };
 const DEFAULT_POS: Vector3<f32> = Vector3::new(0.0, -2.5, 1.8); // TODO: configurable height
 const ROT_SPEED: f32 = 50.0; // [deg/s]
 const MOVE_SPEED: f32 = 5.0; // [m/s]
+const SCROLL_SPEED: f32 = 30.0; // [pixels/event]
 
 struct App {
     asset_mgr: Option<EmbedAssetManager>,
@@ -41,6 +42,7 @@ struct AppData {
     prev_ts_opt: Option<Instant>,
     cursor_pos: Option<(u32, u32)>,
     cursor_click: bool,
+    cursor_scroll: ScenePoseScroll,
     active: bool,
 }
 
@@ -82,6 +84,7 @@ impl ApplicationHandler for App {
                 prev_ts_opt: None,
                 cursor_pos: None,
                 cursor_click: false,
+                cursor_scroll: (0.0, 0.0),
                 active: true,
             });
         }
@@ -99,6 +102,7 @@ impl ApplicationHandler for App {
         let prev_ts_opt = &mut data.prev_ts_opt;
         let cursor_pos = &mut data.cursor_pos;
         let cursor_click = &mut data.cursor_click;
+        let cursor_scroll = &mut data.cursor_scroll;
         let active = &mut data.active;
 
         match event {
@@ -111,6 +115,7 @@ impl ApplicationHandler for App {
                     *prev_ts_opt = None;
                     *cursor_pos = None;
                     *cursor_click = false;
+                    *cursor_scroll = (0.0, 0.0);
                     *active = false;
                 } else {
                     output.resize(size.width, size.height);
@@ -132,7 +137,7 @@ impl ApplicationHandler for App {
                     *pitch = 0.0;
                     *yaw = 0.0;
                 } else if let Some(prev_ts) = prev_ts_opt {
-                    let ts_diff: f32 = ts.duration_since(*prev_ts).as_secs_f32();
+                    let ts_diff = ts.duration_since(*prev_ts).as_secs_f32();
                     let value = ROT_SPEED * ts_diff;
 
                     // Handle pitch.
@@ -235,8 +240,10 @@ impl ApplicationHandler for App {
                             let rot_m = Matrix3::from_cols(unit_x, unit_y, unit_z) * Matrix3::from_angle_x(Deg(-90.0));
                             let rot = Quaternion::from(rot_m);
 
-                            pose = Pose::new(pos, &rot, *cursor_click);
-                            scene_input.pose_l_opt = Some(&pose);
+                            pose = Pose::new(pos, &rot, *cursor_click, *cursor_scroll);
+                            scene_input.pose_r_opt = Some(&pose); // Right saber is active by default.
+
+                            *cursor_scroll = (0.0, 0.0);
                         }
 
                         data.main.render(frame, &scene_input);
@@ -274,6 +281,11 @@ impl ApplicationHandler for App {
                     };
                 }
             },
+            WindowEvent::MouseWheel { delta, phase, .. } => {
+                if let MouseScrollDelta::LineDelta(scroll_x, scroll_y) = delta && matches!(phase, TouchPhase::Moved) {
+                    *cursor_scroll = (SCROLL_SPEED * scroll_x, SCROLL_SPEED * scroll_y);
+                }
+            },
             WindowEvent::CloseRequested => {
                 event_loop.exit();
             },
@@ -286,14 +298,16 @@ struct Pose {
     pos: Vector3<f32>,
     rot: Quaternion<f32>,
     click: bool,
+    scroll: ScenePoseScroll,
 }
 
 impl Pose {
-    fn new(pos: &Vector3<f32>, rot: &Quaternion<f32>, click: bool) -> Self {
+    fn new(pos: &Vector3<f32>, rot: &Quaternion<f32>, click: bool, scroll: ScenePoseScroll) -> Self {
         Self {
             pos: *pos,
             rot: *rot,
             click,
+            scroll,
         }
     }
 }
@@ -309,6 +323,10 @@ impl ScenePose for Pose {
 
     fn get_click(&self) -> bool {
         self.click
+    }
+
+    fn get_scroll(&self) -> ScenePoseScroll {
+        self.scroll
     }
 
     fn get_render(&self) -> bool {

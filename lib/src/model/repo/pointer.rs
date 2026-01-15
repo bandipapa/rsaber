@@ -30,18 +30,17 @@ impl ModelFactory for PointerParam {
     fn get_mesh(_asset_mgr: AssetManagerRc, device: &Device) -> Mesh {
         // We don't have .obj file for pointer, calculate mesh.
 
-        let mut vertexes = Vec::new();
-        let mut indexes: Vec<u16> = Vec::new();
-
-        // Create line.
-
         let dir = SABER_DIR.normalize();
 
-        vertexes.push(VertexPos { pos: [0.0, 0.0, 0.0] });
-        vertexes.push(VertexPos { pos: [dir.x, dir.y, dir.z] });
+        let vertexes = [
+            VertexPos { pos: [0.0, 0.0, 0.0] },
+            VertexPos { pos: [dir.x, dir.y, dir.z] },
+        ];
 
-        indexes.push(0);
-        indexes.push(1);
+        let indexes: [u16; 2] = [
+            0,
+            1,
+        ];
 
         let submesh = Submesh::new(0, indexes.len() as u32, 0, PrimitiveStateType::LineList, InstShaderType::SimpleColor); // 0
 

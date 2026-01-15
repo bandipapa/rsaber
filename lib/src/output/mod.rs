@@ -112,8 +112,8 @@ fn get_default_limits() -> Limits {
     // These are arbitrary limits, change them if needed.
     
     Limits {
-        max_binding_array_elements_per_shader_stage: 8,
-        max_binding_array_sampler_elements_per_shader_stage: 8,
+        max_binding_array_elements_per_shader_stage: 16,
+        max_binding_array_sampler_elements_per_shader_stage: 16,
         ..Default::default()
     }
 }

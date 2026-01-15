@@ -3,6 +3,14 @@
 ## State
 
 We are really at the beginning. At least, the colored notes are already moving and there is a basic collision detection logic :).
+As there are no built-in levels, they are fetched from https://beatsaver.com/.
+
+Screenshots
+
+<img src="doc/menu1.jpg" width="300" height="163">
+<img src="doc/menu2.jpg" width="300" height="163">
+<img src="doc/game1.jpg" width="300" height="163">
+<img src="doc/game2.jpg" width="300" height="163">
 
 ## Supported Devices
 
@@ -35,7 +43,7 @@ Prerequisite:
   cargo install cargo-ndk
   set JAVA_HOME=c:\Program Files\Android\Android Studio\jbr
   set ANDROID_HOME=c:\Users\<username>\AppData\Local\Android\Sdk
-  set ANDROID_SDK_LEVEL=32
+  set ANDROID_SDK_LEVEL=34
   ```
 
 Clone repo, connect Quest to PC, then build in debug mode & run:
@@ -70,10 +78,6 @@ cargo install rsaber_pcvr
 rsaber_pcvr
 ```
 
-## Credits
-
-- Demo level: Geoxor - Only Now
-
 ## Suggested Reading
 
 - [Essence of linear algebra (excellent stuff, highly recommended)](https://www.youtube.com/watch?v=fNk_zzaMoSs&list=PLZHQObOWTQDPD3MizzM2xVFitgF8hE_ab)
@@ -85,5 +89,5 @@ rsaber_pcvr
 
 ## TODO
 
-- Linux port
+- Linux port (rsaber_hackedcpal)
 - Have the option to dump/read assets from local files (this is for modders who don't want to recompile)

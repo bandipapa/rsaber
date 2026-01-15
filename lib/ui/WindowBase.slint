@@ -1,0 +1,20 @@
+// Idea taken from https://github.com/slint-ui/slint/discussions/10781 .
+// TODO: Once we decide to use slint, then refactor WindowBase to
+// display titlebar as well.
+
+export global WindowBaseConfig {
+    in property<bool> input-enabled: true;
+}
+
+export component WindowBase inherits Window {
+    @children
+
+    if (!WindowBaseConfig.input-enabled) : TouchArea {
+        width: 100%;
+        height: 100%;
+
+        scroll-event(e) => {
+            return EventResult.accept;
+        }
+    }
+}

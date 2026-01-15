@@ -1,0 +1,204 @@
+import { LineEdit } from "std-widgets.slint";
+
+import { Const } from "Const.slint";
+import { WindowBase } from "WindowBase.slint";
+
+// Ideas taken from https://github.com/slint-ui/slint/blob/master/examples/virtual_keyboard/ .
+
+global LocalConst {
+    out property<color> key-background-inactive: #c0c0c0;
+    out property<color> key-background-active: #000000;
+    out property<float> key-background-opacity: 0.5;
+    out property<length> key-radius: 15px;
+    out property<length> key-spacing: 10px;
+    out property<length> key-space-padding: 100px;
+    out property<color> key-color: #000000;
+    out property<image> arrow-circle-o-left: @image-url("image/arrow-circle-o-left.svg");
+    out property<image> arrow-up: @image-url("image/arrow-up.svg");
+    out property<image> chevron-left: @image-url("image/chevron-left.svg");
+}
+
+struct KeyData {
+    key: string,
+    shift-key: string,
+}
+
+component Button {
+    in property<string> key;
+    in property<image> image;
+
+    callback pressed();
+
+    Rectangle {
+        background: LocalConst.key-background-inactive;
+        border-radius: LocalConst.key-radius;
+
+        if (root.key != "") : Text {
+            color: LocalConst.key-color;
+            text: root.key;
+        }
+
+        if (root.key == "") : Image {
+            source: root.image;
+        }
+    }
+
+    TouchArea {
+        if (self.has-hover) : Rectangle {
+            background: LocalConst.key-background-active;
+            border-radius: LocalConst.key-radius;
+            opacity: LocalConst.key-background-opacity;
+        }
+        
+        clicked => {
+            root.pressed();
+        }
+    }
+}
+
+export component VirtualKeyboardWindow inherits WindowBase {
+    default-font-family: Const.default-font-family;
+    default-font-size: Const.default-font-size;
+    background: Const.border-color;
+
+    property<[[KeyData]]> keydatas-by-row: [        
+        [
+            { key: "`", shift-key: "~" },
+            { key: "1", shift-key: "!" },
+            { key: "2", shift-key: "@" },
+            { key: "3", shift-key: "#" },
+            { key: "4", shift-key: "$" },
+            { key: "5", shift-key: "%" },
+            { key: "6", shift-key: "^" },
+            { key: "7", shift-key: "&" },
+            { key: "8", shift-key: "*" },
+            { key: "9", shift-key: "(" },
+            { key: "0", shift-key: ")" },
+            { key: "-", shift-key: "_" },
+            { key: "=", shift-key: "+" },
+        ],
+        [
+            { key: "q", shift-key: "Q" },
+            { key: "w", shift-key: "W" },
+            { key: "e", shift-key: "E" },
+            { key: "r", shift-key: "R" },
+            { key: "t", shift-key: "T" },
+            { key: "y", shift-key: "Y" },
+            { key: "u", shift-key: "U" },
+            { key: "i", shift-key: "I" },
+            { key: "o", shift-key: "O" },
+            { key: "p", shift-key: "P" },
+            { key: "[", shift-key: "{" },
+            { key: "]", shift-key: "}" },
+            { key: "\\", shift-key: "|" },
+        ],
+        [
+            { key: "a", shift-key: "A" },
+            { key: "s", shift-key: "S" },
+            { key: "d", shift-key: "D" },
+            { key: "f", shift-key: "F" },
+            { key: "g", shift-key: "G" },
+            { key: "h", shift-key: "H" },
+            { key: "j", shift-key: "J" },
+            { key: "k", shift-key: "K" },
+            { key: "l", shift-key: "L" },
+            { key: ";", shift-key: ":" },
+            { key: "'", shift-key: "\"" },
+        ],
+        [
+            { key: "z", shift-key: "Z" },
+            { key: "x", shift-key: "X" },
+            { key: "c", shift-key: "C" },
+            { key: "v", shift-key: "V" },
+            { key: "b", shift-key: "B" },
+            { key: "n", shift-key: "N" },
+            { key: "m", shift-key: "M" },
+            { key: ",", shift-key: "<" },
+            { key: ".", shift-key: ">" },
+            { key: "/", shift-key: "?" },
+        ],
+    ];
+    in-out property<bool> shift;
+    in-out property<string> value <=> line.text;
+
+    callback pressed(string);
+    callback edited(string);
+    callback enter();
+
+    forward-focus: line; // Set initial focus.
+
+    rect := Rectangle {
+        background: Const.content-background;
+        border-color: Const.border-color;
+        border-width: Const.border-width;
+        border-radius: 2 * Const.border-width;
+
+        VerticalLayout {
+            width: rect.width - 2 * rect.border-width;
+            height: rect.height - 2 * rect.border-width;
+            spacing: LocalConst.key-spacing;
+            padding: LocalConst.key-spacing;
+
+            line := LineEdit {
+                edited(value) => {
+                    root.edited(value);
+                }
+            }
+
+            for keydatas[index] in root.keydatas-by-row : HorizontalLayout {
+                spacing: LocalConst.key-spacing;
+
+                if (index == 3) : Button { // Shift
+                    horizontal-stretch: 2.0;
+                    image: LocalConst.arrow-up;
+                    pressed => {
+                        root.shift = !root.shift;
+                    }
+                }
+
+                for keydata in keydatas : Button {
+                    key: !root.shift ? keydata.key : keydata.shift-key;
+                    pressed => {
+                        root.pressed(self.key);
+                    }
+                }
+
+                if (index == 0) : Button { // Backspace
+                    horizontal-stretch: 2.0;
+                    image: LocalConst.chevron-left;
+                    pressed => {
+                        root.pressed(Key.Backspace);
+                    }
+                }
+
+                if (index == 2) : Button { // Enter
+                    horizontal-stretch: 2.0;
+                    image: LocalConst.arrow-circle-o-left;
+                    pressed => {
+                        root.enter();
+                    }
+                }
+
+                if (index == 3) : Button { // Shift
+                    horizontal-stretch: 2.0;
+                    image: LocalConst.arrow-up;
+                    pressed => {
+                        root.shift = !root.shift;
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                padding-left: LocalConst.key-space-padding;
+                padding-right: LocalConst.key-space-padding;
+
+                Button { // Space
+                    key: " ";
+                    pressed => {
+                        root.pressed(self.key);
+                    }
+                }
+            }
+        }
+    }
+}

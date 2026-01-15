@@ -3,17 +3,17 @@ use std::collections::HashSet;
 use std::ffi::CString;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use ash::vk::Handle;
-use cgmath::{Angle, Deg, Matrix4, Quaternion, Rad, Rotation3, Vector3, Zero};
+use cgmath::{Angle, Deg, Matrix4, Quaternion, Rad, Rotation3, Vector2, Vector3, Zero};
 use wgpu::{Device, DeviceDescriptor, Extent3d, Features, Instance, Queue, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages, TextureView};
 
 #[cfg(target_os = "android")]
 use android_activity::AndroidApp;
 
 use crate::{APP_NAME, APP_VERSION_MAJOR, APP_VERSION_MINOR, APP_VERSION_PATCH, Main};
-use crate::scene::{SceneInput, ScenePose};
+use crate::scene::{SceneInput, ScenePose, ScenePoseScroll};
 use crate::output::{DEPTH_FORMAT, NEAR_Z, FAR_Z, Frame, OutputInfo, ViewMat, create_texture, get_default_features, get_default_limits, get_sample_count};
 
 type OutputViewMat = [ViewMat; 2];
@@ -26,6 +26,7 @@ const MY_TO_OPENXR_M: Matrix4<f32> = Matrix4::new( // my -> openxr
     0.0, 1.0, 0.0, 0.0,
     0.0, 0.0, 0.0, 1.0
 );
+const SCROLL_SPEED: f32 = 1000.0; // [pixels/s]
 
 pub struct XROutput {
     // wgpu
@@ -46,6 +47,8 @@ pub struct XROutput {
     xr_right_space: openxr::Space,
     xr_left_click: openxr::Action<bool>,
     xr_right_click: openxr::Action<bool>,
+    xr_left_scroll_opt: Option<XRScroll>,
+    xr_right_scroll_opt: Option<XRScroll>,
     xr_left_haptic: openxr::Action<openxr::Haptic>,
     xr_right_haptic: openxr::Action<openxr::Haptic>,
     xr_inst: openxr::Instance,
@@ -54,6 +57,8 @@ pub struct XROutput {
 struct Inner {
     state: State,
     event_buf: openxr::EventDataBuffer,
+    origin_opt: Option<Origin>,
+    prev_ts_opt: Option<Instant>,
     xr_waiter: openxr::FrameWaiter,
     xr_stream: openxr::FrameStream<openxr::Vulkan>,
     xr_swapchain: openxr::Swapchain<openxr::Vulkan>,
@@ -68,10 +73,27 @@ enum State {
     Exit,
 }
 
+struct Origin {
+    pos: Vector3<f32>,
+    rot: Quaternion<f32>,
+}
+
 #[allow(clippy::large_enum_variant)]
 enum Begin<'a> {
     NoRender,
     Frame((XRFrame<'a>, Option<XRPose>, Option<XRPose>)),
+}
+
+struct XRScroll {
+    x: openxr::Action<f32>,
+    y: openxr::Action<f32>,
+}
+
+#[allow(non_camel_case_types)]
+enum XRHardware {
+    Oculus_Quest2,
+    Sony_PlayStationVR2,
+    Generic,
 }
 
 impl XROutput {
@@ -126,6 +148,16 @@ impl XROutput {
 
         let xr_inst = xr_entry.create_instance(&xr_app_info, &xr_ext, &[]).expect("Unable to create OpenXR instance");
         let xr_system = xr_inst.system(openxr::FormFactor::HEAD_MOUNTED_DISPLAY).expect("OpenXR system() failed, make sure the headset is connected");
+
+        // TODO: Use array/hashmap to search for tweaks.
+        let xr_system_prop = xr_inst.system_properties(xr_system).expect("OpenXR system_properties() failed");
+        let xr_hardware = if xr_system_prop.vendor_id == 10291 && xr_system_prop.system_name == "Oculus Quest2" {
+            XRHardware::Oculus_Quest2
+        } else if xr_system_prop.vendor_id == 10462 && xr_system_prop.system_name == "SteamVR/OpenXR : playstation_vr2" {
+            XRHardware::Sony_PlayStationVR2
+        } else {
+            XRHardware::Generic
+        };
 
         // Check Vulkan/OpenXR compatibility.
 
@@ -277,7 +309,7 @@ impl XROutput {
             if format_info.is_some() {
                 break;
             }
-        };
+        }
 
         let format_info = format_info.expect("Unable to select swapchain format");
         let color_format = format_info.1;
@@ -314,20 +346,22 @@ impl XROutput {
         let mut width = xr_views[0].recommended_image_rect_width;
         let mut height = xr_views[0].recommended_image_rect_height;
 
-        // TODO: Use array/hashmap to search for tweaks.
-        let xr_system_prop = xr_inst.system_properties(xr_system).expect("OpenXR system_properties() failed");
-        if xr_system_prop.vendor_id == 10291 && xr_system_prop.system_name == "Oculus Quest2" {
-            // Tweak Quest 2 resolution from default (1440x1584) to maximum.
+        match xr_hardware {
+            XRHardware::Oculus_Quest2 => {
+                // Tweak Quest 2 resolution from default (1440x1584) to maximum.
 
-            width = 1832;
-            height = 1920;
-        } else if xr_system_prop.vendor_id == 10462 && xr_system_prop.system_name == "SteamVR/OpenXR : playstation_vr2" {
-            // Tweak view size, since OpenXR reported values are incorrect:
-            // - recommended_image_rect_width: 4080
-            // - recommended_image_rect_height: 4160
+                width = 1832;
+                height = 1920;
+            },
+            XRHardware::Sony_PlayStationVR2 => {
+                // Tweak view size, since OpenXR reported values are incorrect:
+                // - recommended_image_rect_width: 4080
+                // - recommended_image_rect_height: 4160
 
-            width = 2000;
-            height = 2040;
+                width = 2000;
+                height = 2040;
+            },
+            _ => (),
         }
         
         let xr_swapchain_create_info = openxr::SwapchainCreateInfo {
@@ -409,40 +443,115 @@ impl XROutput {
 
         let xr_left_action = xr_action_set.create_action::<openxr::Posef>("left_hand", "Left Hand", &[]).expect("OpenXR create_action() failed");
         let xr_right_action = xr_action_set.create_action::<openxr::Posef>("right_hand", "Right Hand", &[]).expect("OpenXR create_action() failed");
+
         let xr_left_click = xr_action_set.create_action::<bool>("left_click", "Left Click", &[]).expect("OpenXR create_action() failed");
         let xr_right_click = xr_action_set.create_action::<bool>("right_click", "Right Click", &[]).expect("OpenXR create_action() failed");
+
+        let mut xr_left_scroll_opt = None;
+        let mut xr_right_scroll_opt = None;
 
         let xr_left_haptic = xr_action_set.create_action::<openxr::Haptic>("left_haptic", "Left Haptic", &[]).expect("OpenXR create_action() failed");
         let xr_right_haptic = xr_action_set.create_action::<openxr::Haptic>("right_haptic", "Right Haptic", &[]).expect("OpenXR create_action() failed");
 
-        xr_inst.suggest_interaction_profile_bindings(
-            xr_inst.string_to_path("/interaction_profiles/khr/simple_controller").expect("OpenXR string_to_path() failed"),
-            &[
+        // Register known interaction profiles.
+        // SteamVR PSVR2: It doesn't have dedicated interaction profile, but it can emulate oculus/touch_controller.
+
+        let xr_left_hand = "/user/hand/left";
+        let xr_right_hand = "/user/hand/right";
+
+        let mut xr_ok = false;
+
+        for (interaction_profile, aim, click, scroll_opt, haptic) in [
+            (
+                "/khr/simple_controller",
+                "/input/aim/pose",
+                "/input/select/click",
+                None,
+                "/output/haptic",
+            ),
+            (
+                "/oculus/touch_controller",
+                "/input/aim/pose",
+                "/input/trigger/value",
+                Some(("/input/thumbstick/x", "/input/thumbstick/y")),
+                "/output/haptic",
+
+            ),
+        ] {
+            let mut interaction_bindings = vec![
                 openxr::Binding::new(
                     &xr_left_action,
-                    xr_inst.string_to_path("/user/hand/left/input/aim/pose").expect("OpenXR string_to_path() failed"),
+                    xr_inst.string_to_path(&format!("{}{}", xr_left_hand, aim)).expect("OpenXR string_to_path() failed"),
                 ),
                 openxr::Binding::new(
                     &xr_right_action,
-                    xr_inst.string_to_path("/user/hand/right/input/aim/pose").expect("OpenXR string_to_path() failed"),
+                    xr_inst.string_to_path(&format!("{}{}", xr_right_hand, aim)).expect("OpenXR string_to_path() failed"),
                 ),
                 openxr::Binding::new(
                     &xr_left_click,
-                    xr_inst.string_to_path("/user/hand/left/input/select/click").expect("OpenXR string_to_path() failed"),
+                    xr_inst.string_to_path(&format!("{}{}", xr_left_hand, click)).expect("OpenXR string_to_path() failed"),
                 ),
                 openxr::Binding::new(
                     &xr_right_click,
-                    xr_inst.string_to_path("/user/hand/right/input/select/click").expect("OpenXR string_to_path() failed"),
+                    xr_inst.string_to_path(&format!("{}{}", xr_right_hand, click)).expect("OpenXR string_to_path() failed"),
                 ),
                 openxr::Binding::new(
                     &xr_left_haptic,
-                    xr_inst.string_to_path("/user/hand/left/output/haptic").expect("OpenXR string_to_path() failed"),
+                    xr_inst.string_to_path(&format!("{}{}", xr_left_hand, haptic)).expect("OpenXR string_to_path() failed"),
                 ),
                 openxr::Binding::new(
                     &xr_right_haptic,
-                    xr_inst.string_to_path("/user/hand/right/output/haptic").expect("OpenXR string_to_path() failed"),
-                )
-            ]).expect("OpenXR suggest_interaction_profile_bindings() failed");
+                    xr_inst.string_to_path(&format!("{}{}", xr_right_hand, haptic)).expect("OpenXR string_to_path() failed"),
+                ),
+            ];
+
+            if let Some(scroll) = scroll_opt {
+                let xr_left_scroll_x = xr_action_set.create_action::<f32>("left_scroll_x", "Left Scroll X", &[]).expect("OpenXR create_action() failed");
+                let xr_left_scroll_y = xr_action_set.create_action::<f32>("left_scroll_y", "Left Scroll Y", &[]).expect("OpenXR create_action() failed");
+                let xr_right_scroll_x = xr_action_set.create_action::<f32>("right_scroll_x", "Right Scroll X", &[]).expect("OpenXR create_action() failed");
+                let xr_right_scroll_y = xr_action_set.create_action::<f32>("right_scroll_y", "Right Scroll Y", &[]).expect("OpenXR create_action() failed");
+
+                xr_left_scroll_opt = Some(XRScroll {
+                    x: xr_left_scroll_x,
+                    y: xr_left_scroll_y,
+                });
+
+                xr_right_scroll_opt = Some(XRScroll {
+                    x: xr_right_scroll_x,
+                    y: xr_right_scroll_y,
+                });
+
+                let mut scroll_interaction_bindings = vec![
+                    openxr::Binding::new(
+                        &xr_left_scroll_opt.as_ref().unwrap().x,
+                        xr_inst.string_to_path(&format!("{}{}", xr_left_hand, scroll.0)).expect("OpenXR string_to_path() failed"),
+                    ),
+                    openxr::Binding::new(
+                        &xr_left_scroll_opt.as_ref().unwrap().y,
+                        xr_inst.string_to_path(&format!("{}{}", xr_left_hand, scroll.1)).expect("OpenXR string_to_path() failed"),
+                    ),
+                    openxr::Binding::new(
+                        &xr_right_scroll_opt.as_ref().unwrap().x,
+                        xr_inst.string_to_path(&format!("{}{}", xr_right_hand, scroll.0)).expect("OpenXR string_to_path() failed"),
+                    ),
+                    openxr::Binding::new(
+                        &xr_right_scroll_opt.as_ref().unwrap().y,
+                        xr_inst.string_to_path(&format!("{}{}", xr_right_hand, scroll.1)).expect("OpenXR string_to_path() failed"),
+                    ),
+                ];
+
+                interaction_bindings.append(&mut scroll_interaction_bindings);
+            }
+
+            xr_ok |= xr_inst.suggest_interaction_profile_bindings(
+                xr_inst.string_to_path(&format!("/interaction_profiles{}", interaction_profile)).expect("OpenXR string_to_path() failed"),
+                &interaction_bindings
+            ).is_ok();
+        }
+
+        if !xr_ok {
+            panic!("No supported OpenXR interaction profile found");
+        }
 
         xr_session.attach_action_sets(&[&xr_action_set]).expect("OpenXR attach_action_sets() failed");
 
@@ -463,6 +572,8 @@ impl XROutput {
             inner: RefCell::new(Inner {
                 state: State::Stopped,
                 event_buf: openxr::EventDataBuffer::new(),
+                origin_opt: None, // Recenter on startup.
+                prev_ts_opt: None,
                 xr_waiter,
                 xr_stream,
                 xr_swapchain,
@@ -473,6 +584,8 @@ impl XROutput {
             xr_right_space,
             xr_left_click,
             xr_right_click,
+            xr_left_scroll_opt,
+            xr_right_scroll_opt,
             xr_left_haptic,
             xr_right_haptic,
             xr_inst,
@@ -514,7 +627,7 @@ impl XROutput {
             State::Exit => {
                 return false;
             },
-        };
+        }
         
         if old_state != new_state {
             let audio_engine = main.get_audio_engine();
@@ -554,11 +667,14 @@ impl XROutput {
                         _ => (),
                     }
                 },
+                openxr::Event::ReferenceSpaceChangePending(_) => {
+                    inner.origin_opt = None;
+                },
                 openxr::Event::InstanceLossPending(_) => {
                     inner.state = State::Exit;
                 },
                 _ => (),
-            };
+            }
         }
     }
 
@@ -582,30 +698,16 @@ impl XROutput {
         xr_swapchain.wait_image(openxr::Duration::INFINITE).expect("OpenXR wait_image() failed");
         let color_view = self.color_views[color_index as usize].clone();
 
-        // Handle input.
-
-        self.xr_session.sync_actions(&[(&self.xr_action_set).into()]).expect("OpenXR sync_actions() failed");
-
-        let focused = matches!(inner.state, State::Focused);
-
-        let left_location = self.xr_left_space.locate(&self.xr_space, display_t).expect("OpenXR locate() failed");
-        let right_location = self.xr_right_space.locate(&self.xr_space, display_t).expect("OpenXR locate() failed");
-
-        let click_state_l = self.xr_left_click.state(&self.xr_session, openxr::Path::NULL).expect("OpenXR state() failed");
-        let click_state_r = self.xr_right_click.state(&self.xr_session, openxr::Path::NULL).expect("OpenXR state() failed");
-
-        let pose_l_opt = self.calc_pose(focused, &left_location, &click_state_l, &self.xr_left_haptic);
-        let pose_r_opt = self.calc_pose(focused, &right_location, &click_state_r, &self.xr_right_haptic);
-        
         // Calculate view matrices.
 
         let (_, views) = self.xr_session.locate_views(openxr::ViewConfigurationType::PRIMARY_STEREO, display_t, &self.xr_space).expect("OpenXR locate_views() failed");
         assert!(views.len() == 2);
 
-        let mut view_m = [Matrix4::zero().into(), Matrix4::zero().into()];
+        let mut view_calc_m = [Matrix4::zero(), Matrix4::zero()];
         let mut cam_pos = Vector3::zero();
+        let mut yaw = Vector2::zero();
 
-        for (view, view_m_single) in views.iter().zip(view_m.iter_mut()) {
+        for (view, view_calc_m_single) in views.iter().zip(view_calc_m.iter_mut()) {
             let pose = view.pose;
 
             // We are doing the pose matrix inversion manually, since it is trivial.
@@ -618,28 +720,101 @@ impl XROutput {
 
             let cam_m = rot_m * pos_m;
             let proj_m = perspective(&view.fov, NEAR_Z, FAR_Z);
-            let view_m_calc = proj_m * cam_m * MY_TO_OPENXR_M;
+            *view_calc_m_single = proj_m * cam_m;
 
-            *view_m_single = view_m_calc.into();
+            // Camera position is the averaged position of the two views.
 
             cam_pos.x += pos.x / 2.0;
             cam_pos.y -= pos.z / 2.0;
             cam_pos.z += pos.y / 2.0;
+
+            let dir = Quaternion::new(rot.w, rot.x, -rot.z, rot.y) * Vector3::new(0.0, 1.0, 0.0);
+            yaw += dir.truncate() / 2.0;
         }
 
+        // If recenter requested, then we need to calculate origin transformation, which
+        // is transforming from game space to xr space:
+        // - Position: taken from headset position.
+        // - Rotation: taken from headset yaw.
+
+        if inner.origin_opt.is_none() {
+            let angle = yaw.x.atan2(yaw.y);
+
+            let origin = Origin {
+                pos: Vector3::new(cam_pos.x, cam_pos.y, 0.0),
+                rot: Quaternion::from_angle_z(Rad(-angle)),
+            };
+
+            inner.origin_opt = Some(origin);
+        }
+
+        let mut view_m = [Matrix4::zero().into(), Matrix4::zero().into()];
+
+        let origin = inner.origin_opt.as_ref().unwrap();
+        let origin_calc_m = MY_TO_OPENXR_M * Matrix4::from_translation(origin.pos) * Matrix4::from(origin.rot);
+
+        for (view_calc_m_single, view_m_single) in view_calc_m.iter().zip(view_m.iter_mut()) {
+            *view_m_single = (view_calc_m_single * origin_calc_m).into();
+        }
+
+        // Handle input.
+
+        self.xr_session.sync_actions(&[(&self.xr_action_set).into()]).expect("OpenXR sync_actions() failed");
+
+        let focused = matches!(inner.state, State::Focused);
+        let mut ts_diff = 0.0;
+
+        if !focused {
+            inner.prev_ts_opt = None;
+        } else {
+            let ts: Instant = Instant::now();
+
+            if let Some(prev_ts) = inner.prev_ts_opt {
+                ts_diff = ts.duration_since(prev_ts).as_secs_f32();
+            }
+
+            inner.prev_ts_opt = Some(ts);
+        }
+
+        let left_location = self.xr_left_space.locate(&self.xr_space, display_t).expect("OpenXR locate() failed");
+        let right_location = self.xr_right_space.locate(&self.xr_space, display_t).expect("OpenXR locate() failed");
+
+        let click_l = self.xr_left_click.state(&self.xr_session, openxr::Path::NULL).expect("OpenXR state() failed").current_state;
+        let click_r = self.xr_right_click.state(&self.xr_session, openxr::Path::NULL).expect("OpenXR state() failed").current_state;
+
+        let scroll_l_opt = self.xr_left_scroll_opt.as_ref().map(|scroll| self.calc_scroll(scroll, ts_diff));
+        let scroll_r_opt = self.xr_right_scroll_opt.as_ref().map(|scroll| self.calc_scroll(scroll, ts_diff));
+
+        let pose_l_opt = self.calc_pose(focused, origin, &left_location, click_l, scroll_l_opt, &self.xr_left_haptic);
+        let pose_r_opt = self.calc_pose(focused, origin, &right_location, click_r, scroll_r_opt, &self.xr_right_haptic);
+        
         let frame = XRFrame::new(xr_swapchain, xr_stream, &self.xr_space, self.width, self.height, display_t, views, color_view, self.multisample_view.clone(), self.depth_view.clone(), view_m, cam_pos);
         Begin::Frame((frame, pose_l_opt, pose_r_opt))
     }
 
-    fn calc_pose(&self, focused: bool, location: &openxr::SpaceLocation, click_state: &openxr::ActionState<bool>, haptic: &openxr::Action<openxr::Haptic>) -> Option<XRPose> {
-        if focused && location.location_flags.contains(openxr::SpaceLocationFlags::POSITION_VALID | openxr::SpaceLocationFlags::ORIENTATION_VALID) && click_state.is_active {
+    fn calc_scroll(&self, scroll: &XRScroll, ts_diff: f32) -> ScenePoseScroll {
+        (
+            -SCROLL_SPEED * ts_diff * scroll.x.state(&self.xr_session, openxr::Path::NULL).expect("OpenXR state() failed").current_state,
+            SCROLL_SPEED * ts_diff * scroll.y.state(&self.xr_session, openxr::Path::NULL).expect("OpenXR state() failed").current_state,
+        )
+    }
+
+    fn calc_pose(&self, focused: bool, origin: &Origin, location: &openxr::SpaceLocation, click: bool, scroll_opt: Option<ScenePoseScroll>, haptic: &openxr::Action<openxr::Haptic>) -> Option<XRPose> {
+        if focused && location.location_flags.contains(openxr::SpaceLocationFlags::POSITION_VALID | openxr::SpaceLocationFlags::ORIENTATION_VALID) {
             let offset = Quaternion::from_angle_x(Deg(-45.0));
 
-            let pos = location.pose.position;
-            let rot = location.pose.orientation;
-            let my_rot = Quaternion::new(rot.w, rot.x, -rot.z, rot.y) * offset;
+            let xr_pos = location.pose.position;
+            let xr_rot = location.pose.orientation;
 
-            Some(XRPose::new(&Vector3::new(pos.x, -pos.z, pos.y), &my_rot, click_state.current_state, self.xr_session.clone(), haptic.clone()))
+            // We need the inverse of the origin transformation, since we are
+            // transforming from xr space to game space.
+
+            let origin_rot_inv = origin.rot.conjugate();
+
+            let pos = origin_rot_inv * (Vector3::new(xr_pos.x, -xr_pos.z, xr_pos.y) - origin.pos); // inverse(origin.rot) * inverse(origin.pos) * xr_pos
+            let rot = origin_rot_inv * Quaternion::new(xr_rot.w, xr_rot.x, -xr_rot.z, xr_rot.y) * offset;
+
+            Some(XRPose::new(&pos, &rot, click, scroll_opt.unwrap_or((0.0, 0.0)), self.xr_session.clone(), haptic.clone())) // TODO: unwrap_or -> unwrap_or_default.
         } else {
             None
         }
@@ -801,16 +976,18 @@ struct XRPose {
     pos: Vector3<f32>,
     rot: Quaternion<f32>,
     click: bool,
+    scroll: ScenePoseScroll,
     xr_session: openxr::Session<openxr::Vulkan>,
     haptic: openxr::Action<openxr::Haptic>,
 }
 
 impl XRPose {
-    fn new(pos: &Vector3<f32>, rot: &Quaternion<f32>, click: bool, xr_session: openxr::Session<openxr::Vulkan>, haptic: openxr::Action<openxr::Haptic>) -> Self {
+    fn new(pos: &Vector3<f32>, rot: &Quaternion<f32>, click: bool, scroll: ScenePoseScroll, xr_session: openxr::Session<openxr::Vulkan>, haptic: openxr::Action<openxr::Haptic>) -> Self {
         Self {
             pos: *pos,
             rot: *rot,
             click,
+            scroll,
             xr_session,
             haptic,
         }
@@ -828,6 +1005,10 @@ impl ScenePose for XRPose {
 
     fn get_click(&self) -> bool {
         self.click
+    }
+
+    fn get_scroll(&self) -> ScenePoseScroll {
+        self.scroll
     }
 
     fn get_render(&self) -> bool {

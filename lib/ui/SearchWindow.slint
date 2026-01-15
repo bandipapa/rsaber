@@ -1,0 +1,269 @@
+import { Button, ComboBox, ScrollView, Switch } from "std-widgets.slint";
+
+import { Const } from "Const.slint";
+import { WindowBase } from "WindowBase.slint";
+
+global LocalConst {
+    out property<length> song-spacing: 5px;
+    out property<length> cover-img-wh: 100px;
+    out property<length> main-spacing: 10px;
+    out property<color> active-background: #e0e0e0;
+}
+
+export enum SearchWindowMode { // TODO: Add progress indicator.
+    Item,
+    Message,
+}
+
+export struct SearchWindowItem {
+    name: string,
+    uploader-name: string,
+    cover-img: image,
+    duration: string,
+    bpm: string,
+    score: string,
+    preview-url: string,
+    download-url: string,
+    difficulty-ints: [int],
+    difficulty-strs: [string],
+    active: bool,
+    preview-active: bool,
+}
+
+component Song {
+    in property<SearchWindowItem> item;
+
+    callback select();
+
+    touch := TouchArea {
+        Rectangle {
+            background: root.item.active || touch.has-hover ? LocalConst.active-background : Const.content-background;
+
+            HorizontalLayout {
+                spacing: LocalConst.song-spacing;
+
+                Rectangle {
+                    width: LocalConst.cover-img-wh;
+                    height: LocalConst.cover-img-wh;
+
+                    Image {
+                        source: root.item.cover-img;
+                        image-fit: contain;
+                        width: LocalConst.cover-img-wh;
+                        height: LocalConst.cover-img-wh;
+                    }
+
+                    if (root.item.active || touch.has-hover) : Image {
+                        source: !root.item.preview-active ? @image-url("image/play.svg") : @image-url("image/stop.svg");
+                        image-fit: contain;
+                        x: 0;
+                        y: 0;
+                        width: LocalConst.cover-img-wh;
+                        height: LocalConst.cover-img-wh;
+                    }
+                }
+
+                Text {
+                    text: root.item.name;
+                    wrap: word-wrap;
+                }
+            }
+        }
+
+        clicked => {
+            root.select();
+        }
+    }
+}
+
+export component SearchWindow inherits WindowBase {
+    default-font-family: Const.default-font-family;
+    default-font-size: Const.default-font-size;
+    background: Const.border-color;
+
+    in-out property<string> query;
+    out property<string> order <=> order.current-value;
+    property<int> orig-order-index;
+    out property<bool> ascending <=> ascending.checked;
+    in property<bool> test-visible: false;
+    in property<SearchWindowMode> mode;
+    in property<bool> show-detail: false;
+    in property<[SearchWindowItem]> items;
+    in property<SearchWindowItem> detail-item;
+    in-out property<int> difficulty-index;
+    in property<string> detail-message;
+    in property<string> message;
+
+    callback change-query();
+    callback change-other();
+    callback refresh();
+    callback test();
+    callback select(int);
+    callback play();
+
+    init => {
+        root.orig-order-index = order.current-index;
+    }
+
+    VerticalLayout { 
+        Text {
+            text: "Search";
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            color: Const.title-color;
+            height: Const.title-height;
+        }
+
+        rect := Rectangle {
+            background: Const.content-background;
+            border-color: Const.border-color;
+            border-width: Const.border-width;
+            border-radius: 2 * Const.border-width;
+
+            VerticalLayout {
+                width: rect.width - 2 * rect.border-width;
+                height: rect.height - 2 * rect.border-width;
+                padding: LocalConst.main-spacing;
+                spacing: LocalConst.main-spacing;
+
+                HorizontalLayout {
+                    vertical-stretch: 0;
+                    spacing: LocalConst.main-spacing;
+
+                    Button {
+                        text: root.query == "" ? "Query" : root.query;
+                        width: 20%; // TODO: how to constraint width (e.g. query is too long)?
+                                
+                        clicked => {
+                            root.change-query();
+                        }
+                    }
+
+                    order := ComboBox {
+                        model: ["Latest", "Relevance", "Rating", "Curated", "Duration"];
+                        current-index: 1;
+                        width: 20%;
+
+                        selected => {
+                            if (root.orig-order-index != self.current-index) { // Trigger callback only in case of change.
+                                root.orig-order-index = self.current-index;
+                                root.change-other();
+                            }
+                        }
+                    }
+
+                    ascending := Switch {
+                        text: self.checked ? "Ascending" : "Descending";
+                        checked: false;
+                        width: 20%;
+
+                        toggled => {
+                            root.change-other();
+                        }
+                    }
+
+                    Button {
+                        text: "Refresh";
+                        width: 15%;
+
+                        clicked => {
+                            root.refresh();
+                        }
+                    }
+
+                    if (root.test-visible) : Button {
+                        text: "Test Mode";
+                        width: 15%;
+
+                        clicked => {
+                            root.test();
+                        }
+                    }
+                }
+
+                if (root.mode == SearchWindowMode.Item) : HorizontalLayout {
+                    vertical-stretch: 1;
+                    spacing: LocalConst.main-spacing;
+
+                    ScrollView {
+                        width: (1200px - 2 * rect.border-width - 2 * LocalConst.main-spacing - LocalConst.main-spacing) / 2; // TODO: avoid hardcode of window width.
+                        
+                        VerticalLayout {
+                            spacing: LocalConst.song-spacing;
+
+                            for item[index] in root.items : Song {
+                                item: item;
+
+                                select => {
+                                    root.select(index);
+                                }
+                            }
+                        }
+                    }
+
+                    if (root.show-detail) : VerticalLayout {
+                        width: (1200px - 2 * rect.border-width - 2 * LocalConst.main-spacing - LocalConst.main-spacing) / 2; // TODO: avoid hardcode of window width.
+                        alignment: start;
+                        spacing: LocalConst.main-spacing;
+
+                        VerticalLayout {
+                            Text {
+                                text: "Uploader: " + root.detail-item.uploader-name;
+                            }
+
+                            Text {
+                                text: "Duration: " + root.detail-item.duration;
+                            }
+
+                            Text {
+                                text: "BPM: " + root.detail-item.bpm;
+                            }
+
+                            Text {
+                                text: "Score: " + root.detail-item.score + "%";
+                            }
+                        }
+
+                        HorizontalLayout {
+                            spacing: LocalConst.main-spacing;
+
+                            for difficulty-str[index] in root.detail-item.difficulty-strs : Button {
+                                text: difficulty-str;
+                                primary: root.difficulty-index == index;
+
+                                clicked => {
+                                    root.difficulty-index = index;
+                                }
+                            }
+                        }
+
+                        if (root.detail-item.difficulty-strs.length > 0) : Button {
+                            text: "Play";
+
+                            clicked => {
+                                root.play();
+                            }
+                        }
+
+                        if (root.detail-item.difficulty-strs.length == 0) : Text {
+                            text: "The song doesn't support Standard characteristic";
+                        }
+
+                        Text {
+                            text: root.detail-message;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+
+                if (root.mode == SearchWindowMode.Message) : Rectangle {
+                    vertical-stretch: 1;
+
+                    Text {
+                        text: root.message;
+                    }
+                }
+            }
+        }
+    }
+}

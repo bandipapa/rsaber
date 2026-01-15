@@ -61,7 +61,7 @@ pub fn create_stats_window(model_reg: &mut ModelRegistry, stats: StatsRc, ui_loo
 
             while alive.load(Ordering::Relaxed) {
                 ui_loop.add_callback({
-                    let window_weak = window_weak.cloned();
+                    let window_weak = window_weak.clone();
                     let stats_inner = stats.get_inner();
                     let alive = Arc::clone(&alive);
 

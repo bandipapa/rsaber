@@ -1,6 +1,6 @@
 use std::any::Any;
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::iter;
 use std::mem;
 use std::rc::Rc;
@@ -14,6 +14,7 @@ use slint::platform::{self, Platform, PointerEventButton, WindowAdapter, WindowE
 use slint::platform::software_renderer::{MinimalSoftwareWindow, PremultipliedRgbaColor, RepaintBufferType, TargetPixel};
 use wgpu::{Extent3d, Origin3d, Queue, TexelCopyBufferLayout, TexelCopyTextureInfo, Texture, TextureAspect};
 
+use crate::net::NetManagerRunner;
 use crate::util::MuCo;
 
 pub type UIManagerRc = Rc<UIManager>;
@@ -27,13 +28,13 @@ pub struct UIManager {
 type InnerMuCo = Arc<MuCo<Inner>>;
 
 struct Inner {
-    window_ops_opt: Option<Vec<WindowOp>>, // TODO: use queue instead?
-    current_event_opt: Option<CurrentEvent>,
-    callbacks_opt: Option<Vec<Box<dyn FnOnce() + Send + 'static>>>,
+    window_ops_opt: Option<VecDeque<WindowOp>>,
+    event_infos_opt: Option<VecDeque<EventInfo>>,
+    callbacks_opt: Option<VecDeque<Box<dyn FnOnce() + Send + 'static>>>,
 }
 
 impl Inner {
-    fn window_ops(&mut self) -> &mut Vec<WindowOp> {
+    fn window_ops(&mut self) -> &mut VecDeque<WindowOp> {
         self.window_ops_opt.get_or_insert_default()
     }
 }
@@ -47,23 +48,23 @@ struct WindowOpCreate {
     window_id: WindowId,
     width: u32,
     height: u32,
-    func: Box<dyn FnOnce() -> Box<dyn SlintComponentHandle + 'static> + Send + 'static>,
+    func: Box<dyn FnOnce() -> Box<dyn IntComponentHandle + 'static> + Send + 'static>,
     texture: Texture,
     weak_tx: Sender<Box<dyn Any + Send>>,
 }
 
-struct CurrentEvent {
+struct EventInfo {
     window_id: WindowId,
     event: UIEvent,
 }
 
-type WindowId = u32;
+type WindowId = usize;
 
 impl UIManager {
     pub fn new(queue: Queue) -> Self {
         let inner = Inner {
             window_ops_opt: None,
-            current_event_opt: None,
+            event_infos_opt: None,
             callbacks_opt: None,
         };
         let inner_muco = Arc::new(MuCo::new(inner));
@@ -90,7 +91,7 @@ impl UIManager {
         }
     }
 
-    pub fn create_window<F: FnOnce() -> C + Send + 'static, C: SlintComponentHandle + 'static>(&self, width: u32, height: u32, func: F, texture: Texture) -> UIWindow {
+    pub fn create_window<F: FnOnce() -> C + Send + 'static, C: ComponentHandle + 'static>(&self, width: u32, height: u32, func: F, texture: Texture) -> UIWindow {
         // Schedule func to run on the slint event loop.
 
         let window_id = self.next_window_id.get();
@@ -111,7 +112,7 @@ impl UIManager {
             let mut inner = self.inner_muco.mutex.lock().unwrap();
 
             let window_ops = inner.window_ops();
-            window_ops.push(window_op);
+            window_ops.push_back(window_op);
 
             self.inner_muco.cond.notify_all();
         }
@@ -141,24 +142,49 @@ impl UIWindow {
         }
     }
 
-    pub fn as_weak<C: ComponentHandle + 'static>(&self) -> UIWindowWeak<C> {
+    pub fn as_weak<C: ComponentHandle + 'static>(&self) -> Weak<C> {
         // At the moment, UIWindow is not aware of the proper slint window type,
         // so we are determining type based on return value.
         // TODO: improve this?
 
-        self.weak.downcast_ref::<UIWindowWeak<C>>().expect("Invalid type").cloned()
+        self.weak.downcast_ref::<Weak<C>>().expect("Invalid type").clone()
     }
 
     pub fn handle_event(&self, event: UIEvent) {
         let mut inner = self.inner_muco.mutex.lock().unwrap();
 
-        // Overwrite the previous (unprocessed) event, since we are interested
-        // only in the most recent one.
+        let event_infos = inner.event_infos_opt.get_or_insert_default();
 
-        inner.current_event_opt = Some(CurrentEvent {
+        // Coalesce events (reduce number of events).
+
+        let last_event_info_opt = event_infos.back_mut();
+        let mut coalesce = false;
+        
+        if let Some(last_event_info) = &last_event_info_opt && last_event_info.window_id == self.window_id {
+            let last_event = &last_event_info.event;
+            coalesce = matches!(last_event, UIEvent::PointerExit);
+
+            if !coalesce {
+                coalesce = match event {
+                    UIEvent::PointerMove(_, _) => matches!(last_event, UIEvent::PointerMove(_, _)),
+                    UIEvent::PointerPress(_, _) => matches!(last_event, UIEvent::PointerPress(_, _)),
+                    UIEvent::PointerScroll(_, _, _, _) => matches!(last_event, UIEvent::PointerScroll(_, _, _, _)),
+                    UIEvent::PointerExit => false,
+                };
+            }
+        }
+
+        let event_info = EventInfo {
             window_id: self.window_id,
             event,
-        });
+        };
+
+        if coalesce {
+            let last_event_info = last_event_info_opt.unwrap();
+            *last_event_info = event_info;
+        } else {
+            event_infos.push_back(event_info);
+        }
 
         self.inner_muco.cond.notify_all();
     }
@@ -171,16 +197,17 @@ impl Drop for UIWindow {
         let mut inner = self.inner_muco.mutex.lock().unwrap();
 
         let window_ops = inner.window_ops();
-        window_ops.push(window_op);
+        window_ops.push_back(window_op);
 
         self.inner_muco.cond.notify_all();
     }
 }
 
 #[allow(clippy::enum_variant_names)]
-pub enum UIEvent {
+pub enum UIEvent { // TODO: Instead of (f32...) we can use structs.
     PointerMove(f32, f32),
     PointerPress(f32, f32),
+    PointerScroll(f32, f32, f32, f32),
     PointerExit,
 }
 
@@ -191,7 +218,7 @@ struct UIPlatform {
 }
 
 struct WindowInfo {
-    _handle: Box<dyn SlintComponentHandle>, // To keep window alive.
+    _handle: Box<dyn IntComponentHandle>, // To keep window alive.
     soft_window: Rc<MinimalSoftwareWindow>,
     width: u32,
     height: u32,
@@ -225,17 +252,17 @@ impl Platform for UIPlatform {
 
     fn run_event_loop(&self) -> Result<(), PlatformError> {
         let mut window_infos = HashMap::new();
-        let mut active_window_id_opt = None;
 
         // TODO: Pause loop when the app is not visible?
+        // TODO: Virtual keyboard is still rendered even if it is not visible (blinking cursor)
         loop {
             let dur_opt = platform::duration_until_next_timer_update();
 
-            let (window_ops_opt, current_event_opt, callbacks_opt) = {
-                // window_ops_opt is an Option to pass the inner Vec quickly (without copying Vec elements).
+            let (window_ops_opt, event_infos_opt, callbacks_opt) = {
+                // Option is utilized to pass inner data quickly (without too much copying).
 
                 let inner = self.inner_muco.mutex.lock().unwrap();
-                let check = |inner: &mut Inner| inner.window_ops_opt.is_none() && inner.current_event_opt.is_none() && inner.callbacks_opt.is_none();
+                let check = |inner: &mut Inner| inner.window_ops_opt.is_none() && inner.event_infos_opt.is_none() && inner.callbacks_opt.is_none();
 
                 let mut inner = if let Some(dur) = dur_opt {
                     self.inner_muco.cond.wait_timeout_while(inner, dur, check).unwrap().0
@@ -243,7 +270,7 @@ impl Platform for UIPlatform {
                     self.inner_muco.cond.wait_while(inner, check).unwrap()
                 };
 
-                (inner.window_ops_opt.take(), inner.current_event_opt.take(), inner.callbacks_opt.take())
+                (inner.window_ops_opt.take(), inner.event_infos_opt.take(), inner.callbacks_opt.take())
             };
 
             // Run callbacks.
@@ -291,71 +318,57 @@ impl Platform for UIPlatform {
                         WindowOp::Drop(window_id) => {
                             window_infos.remove(&window_id);
                         },
-                    };
+                    }
                 }
             }
 
-            // If the active window is dropped, then we don't send WindowEvent::PointerExited,
-            // since there is no window to send to.
+            // Handle events.
 
-            if let Some(active_window_id) = &active_window_id_opt && !window_infos.contains_key(active_window_id) {
-                active_window_id_opt = None;
-            }
+            if let Some(event_infos) = event_infos_opt {
+                for event_info in event_infos {
+                    if let Some(window_info) = window_infos.get(&event_info.window_id) { // Test if the window is still exist.
+                        let soft_window = &window_info.soft_window;
 
-            // Handle event.
+                        let calc_pos = |x, y| LogicalPosition {
+                            x: x * window_info.width as f32,
+                            y: y * window_info.height as f32,
+                        };
 
-            if let Some(current_event) = current_event_opt {
-                let window_id = current_event.window_id;
-                let event = current_event.event;
+                        match event_info.event {
+                            UIEvent::PointerMove(x, y) => {
+                                let pos = calc_pos(x, y);
 
-                // If we receive an event for a window which is different from the active,
-                // and the window has been dropped (see above), then we still send
-                // WindowEvent::PointerExited for the active window.
+                                soft_window.dispatch_event(WindowEvent::PointerMoved {
+                                    position: pos,
+                                });
+                            },
+                            UIEvent::PointerPress(x, y) => {
+                                let pos = calc_pos(x, y);
 
-                if let Some(active_window_id) = &active_window_id_opt && (*active_window_id != window_id || matches!(event, UIEvent::PointerExit)) {
-                    let window_info = window_infos.get(active_window_id).unwrap();
-                    let soft_window = &window_info.soft_window;
+                                soft_window.dispatch_event(WindowEvent::PointerPressed {
+                                    position: pos,
+                                    button: PointerEventButton::Left,
+                                });
 
-                    soft_window.dispatch_event(WindowEvent::PointerExited);
+                                soft_window.dispatch_event(WindowEvent::PointerReleased {
+                                    position: pos,
+                                    button: PointerEventButton::Left,
+                                });
+                            },
+                            UIEvent::PointerScroll(x, y, scroll_x, scroll_y) => {
+                                let pos = calc_pos(x, y);
 
-                    active_window_id_opt = None;
-                }
-
-                if let Some(window_info) = window_infos.get(&window_id) {
-                    let soft_window = &window_info.soft_window;
-
-                    let calc_pos = |x, y| LogicalPosition {
-                        x: x * window_info.width as f32,
-                        y: y * window_info.height as f32,
-                    };
-
-                    match event {
-                        UIEvent::PointerMove(x, y) => {
-                            let pos = calc_pos(x, y);
-                            
-                            soft_window.dispatch_event(WindowEvent::PointerMoved {
-                                position: pos,
-                            });
-
-                            active_window_id_opt = Some(window_id);
-                        },
-                        UIEvent::PointerPress(x, y) => {
-                            let pos = calc_pos(x, y);
-
-                            soft_window.dispatch_event(WindowEvent::PointerPressed {
-                                position: pos,
-                                button: PointerEventButton::Left,
-                            });
-
-                            soft_window.dispatch_event(WindowEvent::PointerReleased {
-                                position: pos,
-                                button: PointerEventButton::Left,
-                            });
-
-                            active_window_id_opt = Some(window_id);
-                        },
-                        UIEvent::PointerExit => (),
-                    };
+                                soft_window.dispatch_event(WindowEvent::PointerScrolled {
+                                    position: pos,
+                                    delta_x: scroll_x,
+                                    delta_y: scroll_y,
+                                });
+                            },
+                            UIEvent::PointerExit => {
+                                soft_window.dispatch_event(WindowEvent::PointerExited);
+                            },
+                        }
+                    }
                 }
             }
 
@@ -420,45 +433,25 @@ impl UILoop {
         let mut inner = self.inner_muco.mutex.lock().unwrap();
 
         let callbacks = inner.callbacks_opt.get_or_insert_default();
-        callbacks.push(Box::new(func));
+        callbacks.push_back(Box::new(func));
 
         self.inner_muco.cond.notify_all();
     }
 }
 
-pub trait SlintComponentHandle {
-    // We can't return Something<Self>, since:
-    // - It is not dyn compatible.
-    // - We need a concrete type for WindowOpCreate->weak_tx,rx.
-    
+impl NetManagerRunner for UILoop {
+    fn exec_done<T: FnOnce() + Send + 'static>(&self, func: T) {
+        self.add_callback(func);
+    }
+}
+
+trait IntComponentHandle {
     fn as_weak(&self) -> Box<dyn Any + Send>;
 }
 
-impl<C: ComponentHandle + 'static> SlintComponentHandle for C {
+impl<C: ComponentHandle + 'static> IntComponentHandle for C {
     fn as_weak(&self) -> Box<dyn Any + Send> {
-        Box::new(UIWindowWeak::new(self))
-    }
-}
-
-pub struct UIWindowWeak<C: ComponentHandle> {
-    weak: Weak<C>,
-}
-
-impl<C: ComponentHandle> UIWindowWeak<C> {
-    fn new(handle: &C) -> Self {
-        Self {
-            weak: handle.as_weak(),
-        }
-    }
-
-    pub fn upgrade(&self) -> Option<C> {
-        self.weak.upgrade()
-    }
-
-    pub fn cloned(&self) -> UIWindowWeak<C> { // TODO: derive clone?
-        Self {
-            weak: self.weak.clone(),
-        }
+        Box::new(self.as_weak())
     }
 }
 

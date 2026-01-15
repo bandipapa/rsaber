@@ -1,63 +1,95 @@
 use std::io;
 use std::iter;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
-use atomic_enum::atomic_enum;
-use rubato::{FftFixedInOut, Resampler};
+use atomic::Atomic;
+use audioadapter_buffers::direct::InterleavedSlice;
+use bytemuck::NoUninit;
+use rubato::{Fft, FixedSync, Resampler};
 use symphonia::core::audio::SampleBuffer;
 use symphonia::core::errors::Error as symphonia_Error;
 use symphonia::core::io::{MediaSourceStream, ReadOnlySource};
 
-use crate::asset::AssetManagerRc;
-use crate::audio::{AudioFactory, AudioSource, AudioSourceState, AudioSubr};
+use crate::asset::AssetFileBox;
+use crate::audio::{AudioInput, AudioSource, AudioSourceState};
 use crate::circbuf::{self, Receiver};
 
 const BUF_LEN: u16 = 3; // [s]
 const RATE_CONV_CHUNK: usize = 1024;
 
-pub struct AudioFileFactory {
-    asset_mgr: AssetManagerRc,
-    name: String,
+pub struct AudioFile {
+    asset_file: AssetFileBox,
+    inner: InnerRc,
 }
 
-impl AudioFileFactory {
-    pub fn new<S: AsRef<str>>(asset_mgr: AssetManagerRc, name: S) -> Self {
-        Self {
-            asset_mgr,
-            name: name.as_ref().to_string(),
-        }
+impl AudioFile {
+    pub fn new(asset_file: AssetFileBox) -> (Self, AudioFileHandle) {
+        let inner = Inner {
+            state: Atomic::new(State::Paused),
+            at_eof: AtomicBool::new(false),
+        };
+        let inner_rc = Arc::new(inner);
+
+        let input = Self {
+            asset_file,
+            inner: Arc::clone(&inner_rc),
+        };
+
+        let handle = AudioFileHandle::new(inner_rc);
+
+        (input, handle)
     }
 
-    fn build(self, channels: u16, sample_rate: u32, state: Arc<AtomicState>) -> AudioFileSource {
+    fn build(self, channels: u16, sample_rate: u32) -> AudioFileSource {
+        let rx = Self::build_impl(self.asset_file, channels, sample_rate);
+        AudioFileSource::new(self.inner, rx)
+    }
+
+    fn build_impl(asset_file: AssetFileBox, channels: u16, sample_rate: u32) -> Receiver<f32> {
         let channels = channels as usize;
 
         // Setup circular buffer.
 
         let len = channels * sample_rate as usize * BUF_LEN as usize;
-        let (sender, receiver) = circbuf::circbuf::<f32>(len);
+        let (tx, rx) = circbuf::circbuf::<f32>(len);
 
         // Open audio file.
 
-        let f = self.asset_mgr.open(&self.name);
-        let src = ReadOnlySource::new(f);
+        let read = match asset_file.read() { // TODO: Report error on UI
+            Ok(read) => read,
+            Err(_) => return rx,
+        };
+
+        let src = ReadOnlySource::new(read);
         let mss = MediaSourceStream::new(Box::new(src), Default::default());
-        let probe = symphonia::default::get_probe().format(&Default::default(), mss, &Default::default(), &Default::default()).expect("Unable to probe"); // TODO: Report error on UI
+        let probe = match symphonia::default::get_probe().format(&Default::default(), mss, &Default::default(), &Default::default()) { // TODO: Report error on UI
+            Ok(probe) => probe,
+            Err(_) => return rx,
+        };
         let mut format = probe.format;
 
-        let track = format.default_track().expect("Unable to determine default track"); // TODO: Report error on UI
-        let mut decoder = symphonia::default::get_codecs().make(&track.codec_params, &Default::default()).expect("Unable to create decoder"); // TODO: Report error on UI
+        let track = match format.default_track() { // TODO: Report error on UI
+            Some(track) => track,
+            None => return rx,
+        };
+        let mut decoder = match symphonia::default::get_codecs().make(&track.codec_params, &Default::default()) { // TODO: Report error on UI
+            Ok(decoder) => decoder,
+            Err(_) => return rx,
+        };
         let track_id = track.id;
 
         let codec_params = decoder.codec_params();
-        assert!(codec_params.channels.unwrap().count() == channels); // TODO: Report error on UI
+        if codec_params.channels.unwrap().count() != channels { // TODO: Report error on UI
+            return rx;
+        }
         let decoder_sample_rate = codec_params.sample_rate.unwrap();
 
         // Determine, if we need rate conversion.
 
         let rate_conv_opt = if decoder_sample_rate != sample_rate {
-            let rate_conv = FftFixedInOut::<f32>::new(decoder_sample_rate as usize, sample_rate as usize, RATE_CONV_CHUNK, channels).expect("Unable to create sample rate converter");
+            let rate_conv = Fft::<f32>::new(decoder_sample_rate as usize, sample_rate as usize, RATE_CONV_CHUNK, 1, channels, FixedSync::Both).expect("Unable to create sample rate converter");
             Some(rate_conv)
         } else {
             None
@@ -67,7 +99,7 @@ impl AudioFileFactory {
         // to interleaved samples, since this is the format expected by the audio engine.
 
         thread::spawn(move || {
-            let mut do_decode = |interleave| {
+            let mut do_decode = || {
                 loop {
                     let packet = match format.next_packet() {
                         Ok(packet) => packet,
@@ -77,10 +109,10 @@ impl AudioFileFactory {
                                     break None;
                                 }
 
-                                panic!("I/O error"); // TODO: Report error on UI
+                                break None; // TODO: Report error on UI
                             },
                             _ => {
-                                panic!("I/O error"); // TODO: Report error on UI
+                                break None; // TODO: Report error on UI
                             }
                         }
                     };
@@ -93,7 +125,10 @@ impl AudioFileFactory {
                         continue;
                     }
 
-                    let decoded = decoder.decode(&packet).expect("Decode error"); // TODO: Report error on UI
+                    let decoded = match decoder.decode(&packet) { // TODO: Report error on UI
+                        Ok(decoded) => decoded,
+                        Err(_) => break None,
+                    };
                     let decoded_len = decoded.frames();
 
                     if decoded_len == 0 {
@@ -101,12 +136,7 @@ impl AudioFileFactory {
                     }
 
                     let mut buf = SampleBuffer::<f32>::new(decoded.capacity() as u64, *decoded.spec());
-                    
-                    if interleave {
-                        buf.copy_interleaved_ref(decoded);
-                    } else {
-                        buf.copy_planar_ref(decoded);
-                    };
+                    buf.copy_interleaved_ref(decoded);
 
                     break Some((buf, decoded_len));
                 }
@@ -115,10 +145,10 @@ impl AudioFileFactory {
             if let Some(mut rate_conv) = rate_conv_opt {
                 // Rate conversion is needed.
 
+                let in_max = rate_conv.input_frames_max();
                 let out_max = rate_conv.output_frames_max();
-                let mut in_buf = Self::create_rate_conv_buf(channels, rate_conv.input_frames_max());
+                let mut in_buf = Self::create_rate_conv_buf(channels, in_max);
                 let mut out_buf = Self::create_rate_conv_buf(channels, out_max);
-                let mut interleave_buf = Box::from_iter(iter::repeat_n(0.0, channels * out_max));
 
                 let mut decoded_buf_opt = None;
                 let mut in_i = 0;
@@ -136,7 +166,7 @@ impl AudioFileFactory {
                         }
 
                         if decoded_buf_opt.is_none() {
-                            match do_decode(false) {
+                            match do_decode() {
                                 Some((buf, len)) => {
                                     let decoded_buf = DecodedBuf {
                                         buf,
@@ -149,30 +179,26 @@ impl AudioFileFactory {
                                 None => {
                                     // At EOF, fill remaining input with silence.
 
-                                    for in_buf_ch in in_buf.iter_mut().map(|in_buf_ch| &mut in_buf_ch[in_i..in_next]) {
-                                        in_buf_ch.fill(0.0);
-                                    }
+                                    let in_buf_sl = &mut in_buf[(in_i * channels)..];
+                                    in_buf_sl.fill(0.0);
 
                                     in_i += todo;
                                     end = true;
                                     break;
                                 },
-                            };
+                            }
                         }
 
                         // Copy from decoded_buf into in_buf: it is needed, since the decoder and the rate converter have
                         // different buffer sizes.
 
                         let decoded_buf = decoded_buf_opt.as_mut().unwrap();
-                        todo = [decoded_buf.len - decoded_buf.i,
-                                todo].into_iter().min().unwrap();
+                        todo = (decoded_buf.len - decoded_buf.i).min(todo);
                         assert!(todo > 0);
 
-                        for (decoded_buf_ch, in_buf_ch) in iter::zip(
-                            decoded_buf.buf.samples().chunks_exact(decoded_buf.len).map(|decoded_buf_ch| &decoded_buf_ch[decoded_buf.i..decoded_buf.i + todo]),
-                            in_buf.iter_mut().map(|in_buf_ch| &mut in_buf_ch[in_i..in_i + todo])) {
-                            in_buf_ch.copy_from_slice(decoded_buf_ch);
-                        }
+                        let decoded_buf_sl = &decoded_buf.buf.samples()[(decoded_buf.i * channels)..((decoded_buf.i + todo) * channels)];
+                        let in_buf_sl = &mut in_buf[(in_i * channels)..((in_i + todo) * channels)];
+                        in_buf_sl.copy_from_slice(decoded_buf_sl);
 
                         // Consume decode buffer.
 
@@ -186,42 +212,33 @@ impl AudioFileFactory {
 
                     assert!(in_i == in_next);
 
-                    // Do rate conversion.
+                    // Do rate conversion. We can't create adapters before the while loop, since:
+                    // - in_buf: they don't support memcpy (see copy_from_slice above).
+                    // - out_buf: not possible to obtain a reference to the internal buffer (see send below).
 
-                    let (in_rd, out_wr) = rate_conv.process_into_buffer(&in_buf, &mut out_buf, None).expect("Unable to do rate conversion");
+                    let in_adapter = Self::create_rate_conv_adapter(&mut in_buf, channels, in_max); // TODO: We don't need mutability for in_buf.
+                    let mut out_adapter = Self::create_rate_conv_adapter(&mut out_buf, channels, out_max);
+                    let (in_rd, out_wr) = rate_conv.process_into_buffer(&in_adapter, &mut out_adapter, None).expect("Unable to do rate conversion");
 
                     // Consume input buffer.
 
-                    if in_rd > 0 && in_rd < in_i {
-                        for in_buf_ch in &mut in_buf {
-                            in_buf_ch.copy_within(in_rd..in_i, 0);
-                        }
+                    if (1..in_i).contains(&in_rd) {
+                        in_buf.copy_within((in_rd * channels)..(in_i * channels), 0);
                     }
 
                     in_i -= in_rd;
 
-                    // Interleave and send output.
+                    // Send output.
 
-                    if out_wr > 0 {
-                        let mut out_buf_ch_its: Vec<_> = out_buf.iter().map(|out_buf_ch| out_buf_ch.iter()).collect();
-                        let mut interleave_buf_it = interleave_buf.iter_mut();
-
-                        for _ in 0..out_wr {
-                            for out_buf_ch_it in &mut out_buf_ch_its {
-                                *interleave_buf_it.next().unwrap() = *out_buf_ch_it.next().unwrap();
-                            }
-                        }
-
-                        if !sender.send(&interleave_buf[..channels * out_wr]) {
-                            break;
-                        }
+                    if !tx.send(&out_buf[..(out_wr * channels)]) {
+                        break;
                     }
                 }
             } else {
                 // Rate conversion is not needed.
 
-                while let Some((interleave_buf, _)) = do_decode(true) {
-                    if !sender.send(interleave_buf.samples()) {
+                while let Some((buf, _)) = do_decode() {
+                    if !tx.send(buf.samples()) {
                         break;
                     }
                 }
@@ -230,21 +247,33 @@ impl AudioFileFactory {
 
         // Wait until the buffer is full.
 
-        receiver.wait_full();
+        rx.wait_full();
 
-        AudioFileSource::new(state, receiver)
+        rx
     }
 
-    fn create_rate_conv_buf(channels: usize, len: usize) -> Box<[Box<[f32]>]> {
-        Box::from_iter(iter::repeat_n(Box::from_iter(iter::repeat_n(0.0, len)), channels))
+    fn create_rate_conv_buf(channels: usize, len: usize) -> Box<[f32]> {
+        Box::from_iter(iter::repeat_n(0.0_f32, channels * len))
+    }
+
+    fn create_rate_conv_adapter(buf: &mut [f32], channels: usize, len: usize) -> InterleavedSlice<&mut [f32]> {
+        InterleavedSlice::new_mut(buf, channels, len).expect("Unable to create adapter")
     }
 }
 
-#[atomic_enum]
+type InnerRc = Arc<Inner>;
+
+struct Inner {
+    state: Atomic<State>,
+    at_eof: AtomicBool,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, NoUninit)]
 enum State {
-    Inactive,
+    Paused,
     Playing,
-    Done,
+    Drop,
 }
 
 struct DecodedBuf {
@@ -253,53 +282,41 @@ struct DecodedBuf {
     len: usize,
 }
 
-impl AudioFactory for AudioFileFactory {
+impl AudioInput for AudioFile {
     type Source = AudioFileSource;
-    type Handle = AudioFileHandle;
 
-    fn source_factory_and_handle(self, channels: u16, sample_rate: u32, subr: AudioSubr) -> (impl FnOnce() -> Self::Source + Send + 'static, Self::Handle) {
-        let state = Arc::new(AtomicState::new(State::Inactive));
-
-        let source_factory = {
-            let state = Arc::clone(&state);
-            move || self.build(channels, sample_rate, state)
-        };
-
-        let handle = AudioFileHandle::new(state, subr);
-
-        (source_factory, handle)
+    fn build(self, channels: u16, sample_rate: u32) -> Self::Source {
+        self.build(channels, sample_rate)
     }
 }
 
 pub struct AudioFileSource {
-    state: Arc<AtomicState>,
-    receiver: Receiver<f32>,
+    inner: InnerRc,
+    rx: Receiver<f32>,
 }
 
 impl AudioFileSource {
-    fn new(state: Arc<AtomicState>, receiver: Receiver<f32>) -> Self {
+    fn new(inner: InnerRc, rx: Receiver<f32>) -> Self {
         Self {
-            state,
-            receiver,
+            inner,
+            rx,
         }
     }
 }
 
 impl AudioSource for AudioFileSource {
-    fn get_samples(&self, buf: &mut [f32]) -> AudioSourceState {
-        match self.state.load(Ordering::Relaxed) {
-            State::Inactive => {
-                AudioSourceState::Inactive
+    fn get_samples(&mut self, buf: &mut [f32]) -> AudioSourceState {
+        match self.inner.state.load(Ordering::Relaxed) {
+            State::Paused => {
+                AudioSourceState::Paused
             },
             State::Playing => {
-                let len = self.receiver.recv(buf);
+                let len = self.rx.recv(buf); // TODO: It should never block.
 
                 if len == 0 {
-                    self.state.store(State::Done, Ordering::Relaxed);
-                    return AudioSourceState::Done;
-                }
-
-                if len < buf.len() { // TODO: Do this one in engine?
+                    self.inner.at_eof.store(true, Ordering::Relaxed);
+                    return AudioSourceState::Drop;
+                } else if len < buf.len() { // TODO: Do this one in engine?
                     // At EOF, pad with silence.
 
                     buf[len..].fill(0.0);
@@ -307,50 +324,40 @@ impl AudioSource for AudioFileSource {
 
                 AudioSourceState::Playing
             },
-            State::Done => {
-                AudioSourceState::Done
+            State::Drop => {
+                AudioSourceState::Drop
             },
         }
     }
 }
 
 pub struct AudioFileHandle {
-    state: Arc<AtomicState>,
-    subr: AudioSubr,
+    inner: InnerRc,
 }
 
 impl AudioFileHandle {
-    fn new(state: Arc<AtomicState>, subr: AudioSubr) -> Self {
+    fn new(inner: InnerRc) -> Self {
         Self {
-            state,
-            subr,
+            inner,
         }
+    }
+
+    pub fn at_eof(&self) -> bool {
+        self.inner.at_eof.load(Ordering::Relaxed)
     }
 
     pub fn play(&self) {
-        if matches!(self.state.load(Ordering::Relaxed), State::Inactive) {
-            self.state.store(State::Playing, Ordering::Relaxed);
-        }
+        self.inner.state.store(State::Playing, Ordering::Relaxed);
     }
 
-    pub fn get_timestamp(&self) -> AudioFileTimestamp {
-        match self.state.load(Ordering::Relaxed) {
-            State::Inactive => AudioFileTimestamp::Inactive,
-            State::Playing => self.subr.get_timestamp().map_or(AudioFileTimestamp::Unavail, AudioFileTimestamp::Playing),
-            State::Done => AudioFileTimestamp::Done,
-        }
+    #[allow(dead_code)] // TODO: remove dead_code once it is used
+    pub fn pause(&self) {
+        self.inner.state.store(State::Paused, Ordering::Relaxed);
     }
 }
 
 impl Drop for AudioFileHandle {
     fn drop(&mut self) {
-        self.state.store(State::Done, Ordering::Relaxed);
+        self.inner.state.store(State::Drop, Ordering::Relaxed);
     }
-}
-
-pub enum AudioFileTimestamp {
-    Inactive,
-    Unavail,
-    Playing(f64),
-    Done,
 }

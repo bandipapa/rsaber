@@ -4,7 +4,7 @@
 // TODO: use &refs in #[derive(Deserialize)] structs instead of owned types
 #![allow(non_camel_case_types)]
 
-use std::fmt;
+use std::fmt::{Formatter, Result as fmt_Result};
 use std::ops::Range;
 use std::result::{Result as result_Result};
 use std::sync::Arc;
@@ -13,20 +13,28 @@ use serde::{Deserialize, Deserializer};
 use serde::de::{Error as de_Error, Visitor};
 use serde_json::{Error as json_Error, Value};
 
-use crate::asset::AssetManagerRc;
+use crate::asset::{AssetError, AssetManagerRc};
 use crate::model::Color;
+use crate::songdef::SongDifficulty;
 
 type Result<T> = result_Result<T, Error>;
 
 #[derive(Debug)]
 pub enum Error {
-    ParseError(json_Error),
-    BuildError(String),
+    Asset(AssetError),
+    Parse(json_Error),
+    Build(String),
+}
+
+impl From<AssetError> for Error {
+    fn from(value: AssetError) -> Self {
+        Error::Asset(value)
+    }
 }
 
 impl From<json_Error> for Error {
     fn from(value: json_Error) -> Self {
-        Error::ParseError(value)
+        Error::Parse(value)
     }
 }
 
@@ -34,7 +42,6 @@ impl From<json_Error> for Error {
 
 pub struct SongInfo {
     asset_mgr: AssetManagerRc,
-    dir: String,
     author: String,
     title: String,
     song_filename: String,
@@ -44,23 +51,24 @@ pub struct SongInfo {
 }
 
 impl SongInfo {
-    pub fn load<S: AsRef<str>>(asset_mgr: AssetManagerRc, dir: S) -> Result<Self> {
+    pub fn load(asset_mgr: AssetManagerRc) -> Result<Self> {
         // From https://docs.rs/serde_json/latest/serde_json/fn.from_reader.html :
         // Note that counter to intuition, this function is usually slower than reading a file completely into memory and then applying from_str or from_slice on it.
 
-        let buf = asset_mgr.read_file(&format!("{}/Info.dat", dir.as_ref()));
+        let asset_file = asset_mgr.open("/Info.dat")?;
+        let buf = asset_file.read_str()?;
         let value: Value = serde_json::from_str(&buf)?;
 
         match get_version(&value)? {
             "2.0.0" | "2.1.0" => {
                 let info: SongInfo_V2 = serde_json::from_value(value)?;
-                Ok(info.build(asset_mgr, dir)?)
+                info.build(asset_mgr)
             },
             "4.0.0" | "4.0.1" => {
                 let info: SongInfo_V4 = serde_json::from_value(value)?;
-                Ok(info.build(asset_mgr, dir)?)
+                info.build(asset_mgr)
             },
-            version => Err(Error::BuildError(format!("Unsupported info version: {}", version)))
+            version => Err(Error::Build(format!("Unsupported info version: {}", version)))
         }
     }
 
@@ -70,7 +78,6 @@ impl SongInfo {
 
         Self {
             asset_mgr,
-            dir: "dir".to_string(),
             author: "author".to_string(),
             title: "title".to_string(),
             song_filename: "song_filename".to_string(),
@@ -81,7 +88,7 @@ impl SongInfo {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn new<S: AsRef<str>>(asset_mgr: AssetManagerRc, dir: S, author: String, title: String, sub_title: String, song_filename: String, bpm_selector: BPMSelector, color_schemes: Vec<ColorScheme>, beatmap_infos: Vec<BeatmapInfo>) -> Self {
+    fn new(asset_mgr: AssetManagerRc, author: String, title: String, sub_title: String, song_filename: String, bpm_selector: BPMSelector, color_schemes: Vec<ColorScheme>, beatmap_infos: Vec<BeatmapInfo>) -> Self {
         let space = if sub_title.is_empty() {
             ""
         } else {
@@ -90,10 +97,9 @@ impl SongInfo {
 
         Self {
             asset_mgr,
-            dir: dir.as_ref().to_string(),
             author,
             title: format!("{}{}{}", title, space, sub_title),
-            song_filename: format!("{}/{}", dir.as_ref(), song_filename),
+            song_filename: format!("/{}", song_filename),
             bpm_selector,
             color_schemes: Box::from(color_schemes),
             beatmap_infos: Box::from(beatmap_infos),
@@ -115,7 +121,7 @@ impl SongInfo {
     pub fn get_bpm_info(&self) -> Result<BPMInfo> {
         Ok(match &self.bpm_selector {
             BPMSelector::Fixed(bpm) => BPMInfo::Fixed(*bpm),
-            BPMSelector::Mapped(filename) => BPMInfo::Mapped(BPMMap::load(Arc::clone(&self.asset_mgr), &self.dir, filename)?),
+            BPMSelector::Mapped(filename) => BPMInfo::Mapped(BPMMap::load(Arc::clone(&self.asset_mgr), filename)?),
         })
     }
 
@@ -171,9 +177,8 @@ impl Default for ColorScheme {
 
 pub struct BeatmapInfo {
     asset_mgr: AssetManagerRc,
-    dir: String,
-    characteristic: String, // TODO: map
-    difficulty: String, // TODO: map
+    characteristic: String,
+    difficulty: SongDifficulty,
     color_scheme_index_opt: Option<u32>,
     def_color_scheme: ColorScheme,
     filename: String,
@@ -185,13 +190,12 @@ pub struct BeatmapInfo {
 
 impl BeatmapInfo {
     #[allow(clippy::too_many_arguments)]
-    fn new<S: AsRef<str>>(asset_mgr: AssetManagerRc, dir: S, characteristic: String, difficulty: String, color_scheme_index_opt: Option<u32>, def_color_scheme: ColorScheme, filename: String, notejump_speed: f32, notejump_beatoffset: f32) -> Self {
+    fn new(asset_mgr: AssetManagerRc, characteristic: String, difficulty: SongDifficulty, mut color_scheme_index_opt: Option<i32>, def_color_scheme: ColorScheme, filename: String, notejump_speed: f32, notejump_beatoffset: f32) -> Self {
         Self {
             asset_mgr,
-            dir: dir.as_ref().to_string(),
             characteristic,
             difficulty,
-            color_scheme_index_opt,
+            color_scheme_index_opt: color_scheme_index_opt.take_if(|color_scheme_index| *color_scheme_index >= 0).map(|color_scheme_index| color_scheme_index.try_into().unwrap()), // color_scheme_index can be negative, which is the same as not specified.
             def_color_scheme,
             filename,
             notejump_speed,
@@ -205,9 +209,8 @@ impl BeatmapInfo {
     fn test(asset_mgr: AssetManagerRc) -> Self {
         Self {
             asset_mgr,
-            dir: "dir".to_string(),
-            characteristic: "characteristic".to_string(),
-            difficulty: "difficulty".to_string(),
+            characteristic: "Standard".to_string(),
+            difficulty: SongDifficulty::Easy,
             color_scheme_index_opt: None,
             def_color_scheme: ColorScheme::default(),
             filename: "filename".to_string(),
@@ -223,15 +226,15 @@ impl BeatmapInfo {
             return Beatmap::test();
         }
 
-        Beatmap::load(Arc::clone(&self.asset_mgr), &self.dir, &self.filename)
+        Beatmap::load(Arc::clone(&self.asset_mgr), &self.filename)
     }
 
     pub fn get_characteristic(&self) -> &str {
         &self.characteristic
     }
 
-    pub fn get_difficulty(&self) -> &str {
-        &self.difficulty
+    pub fn get_difficulty(&self) -> SongDifficulty {
+        self.difficulty
     }
 
     pub fn get_color_scheme_index_opt(&self) -> Option<u32> {
@@ -274,7 +277,7 @@ struct SongInfo_V2 {
 }
 
 impl SongInfo_V2 {
-    fn build<S: AsRef<str>>(self, asset_mgr: AssetManagerRc, dir: S) -> Result<SongInfo> {
+    fn build(self, asset_mgr: AssetManagerRc) -> Result<SongInfo> {
         let mut color_schemes = Vec::new();
         if let Some(raw_color_schemes) = self.color_schemes {
             for raw_color_scheme in raw_color_schemes {
@@ -303,12 +306,12 @@ impl SongInfo_V2 {
                     }
                 }
 
-                let beatmap_info = BeatmapInfo::new(Arc::clone(&asset_mgr), dir.as_ref(), characteristic.clone(), raw_beatmap_info.difficulty, raw_beatmap_info.color_scheme_index_opt, def_color_scheme, raw_beatmap_info.filename, raw_beatmap_info.notejump_speed, raw_beatmap_info.notejump_beatoffset);
+                let beatmap_info = BeatmapInfo::new(Arc::clone(&asset_mgr), characteristic.clone(), raw_beatmap_info.difficulty, raw_beatmap_info.color_scheme_index_opt, def_color_scheme, raw_beatmap_info.filename, raw_beatmap_info.notejump_speed, raw_beatmap_info.notejump_beatoffset);
                 beatmap_infos.push(beatmap_info);
             }
         }
 
-        Ok(SongInfo::new(asset_mgr, dir, self.author, self.title, self.sub_title, self.song_filename, BPMSelector::Fixed(self.bpm), color_schemes, beatmap_infos))
+        Ok(SongInfo::new(asset_mgr, self.author, self.title, self.sub_title, self.song_filename, BPMSelector::Fixed(self.bpm), color_schemes, beatmap_infos))
     }
 }
 
@@ -337,9 +340,9 @@ struct SongInfo_V2_BeatmapInfoSet {
 #[derive(Deserialize)]
 struct SongInfo_V2_BeatmapInfo {
     #[serde(rename = "_difficulty")]
-    difficulty: String,
+    difficulty: SongDifficulty,
     #[serde(rename = "_beatmapColorSchemeIdx")]
-    color_scheme_index_opt: Option<u32>,
+    color_scheme_index_opt: Option<i32>,
     #[serde(rename = "_beatmapFilename")]
     filename: String,
     #[serde(rename = "_noteJumpMovementSpeed")]
@@ -369,13 +372,13 @@ struct SongInfo_V4 {
 }
 
 impl SongInfo_V4 {
-    fn build<S: AsRef<str>>(self, asset_mgr: AssetManagerRc, dir: S) -> Result<SongInfo> {
+    fn build(self, asset_mgr: AssetManagerRc) -> Result<SongInfo> {
         let bpm_selector = if let Some(filename) = self.audio.bpmmap_filename {
             BPMSelector::Mapped(filename)
         } else if let Some(bpm) = self.audio.bpm {
             BPMSelector::Fixed(bpm)
         } else {
-            return Err(Error::BuildError("Either bpm or audioDataFilename is required".to_string()));
+            return Err(Error::Build("Either bpm or audioDataFilename is required".to_string()));
         };
 
         let mut color_schemes = Vec::new();
@@ -388,11 +391,11 @@ impl SongInfo_V4 {
 
         let mut beatmap_infos = Vec::new();
         for raw_beatmap_info in self.beatmap_infos {
-            let beatmap_info = BeatmapInfo::new(Arc::clone(&asset_mgr), dir.as_ref(), raw_beatmap_info.characteristic, raw_beatmap_info.difficulty, raw_beatmap_info.color_scheme_index_opt, ColorScheme::default(), raw_beatmap_info.filename, raw_beatmap_info.notejump_speed, raw_beatmap_info.notejump_beatoffset);
+            let beatmap_info = BeatmapInfo::new(Arc::clone(&asset_mgr), raw_beatmap_info.characteristic, raw_beatmap_info.difficulty, raw_beatmap_info.color_scheme_index_opt, ColorScheme::default(), raw_beatmap_info.filename, raw_beatmap_info.notejump_speed, raw_beatmap_info.notejump_beatoffset);
             beatmap_infos.push(beatmap_info);
         }
 
-        Ok(SongInfo::new(asset_mgr, dir, self.song.author, self.song.title, self.song.sub_title, self.audio.song_filename, bpm_selector, color_schemes, beatmap_infos))
+        Ok(SongInfo::new(asset_mgr, self.song.author, self.song.title, self.song.sub_title, self.audio.song_filename, bpm_selector, color_schemes, beatmap_infos))
     }
 }
 
@@ -424,9 +427,9 @@ struct SongInfo_V4_ColorScheme {
 #[derive(Deserialize)]
 struct SongInfo_V4_BeatmapInfo {
     characteristic: String,
-    difficulty: String,
+    difficulty: SongDifficulty,
     #[serde(rename = "beatmapColorSchemeIdx")]
-    color_scheme_index_opt: Option<u32>,
+    color_scheme_index_opt: Option<i32>,
     #[serde(rename = "beatmapDataFilename")]
     filename: String,
     #[serde(rename = "noteJumpMovementSpeed")]
@@ -442,8 +445,9 @@ pub struct BPMMap {
 }
 
 impl BPMMap {
-    fn load<S: AsRef<str>>(asset_mgr: AssetManagerRc, dir: S, filename: S) -> Result<Self> {
-        let buf = asset_mgr.read_file(&format!("{}/{}", dir.as_ref(), filename.as_ref()));
+    fn load<S: AsRef<str>>(asset_mgr: AssetManagerRc, filename: S) -> Result<Self> {
+        let asset_file = asset_mgr.open(&format!("/{}", filename.as_ref()))?;
+        let buf = asset_file.read_str()?;
         let value: Value = serde_json::from_str(&buf)?;
 
         match get_version(&value)? {
@@ -455,7 +459,7 @@ impl BPMMap {
                 let bpmmap: BPMMap_V4 = serde_json::from_value(value)?;
                 Ok(bpmmap.build())
             },
-            version => Err(Error::BuildError(format!("Unsupported bpmmap version: {}", version)))
+            version => Err(Error::Build(format!("Unsupported bpmmap version: {}", version)))
         }
     }
 
@@ -557,8 +561,9 @@ pub struct Beatmap {
 }
 
 impl Beatmap {
-    fn load<S: AsRef<str>>(asset_mgr: AssetManagerRc, dir: S, filename: S) -> Result<Self> {
-        let buf = asset_mgr.read_file(&format!("{}/{}", dir.as_ref(), filename.as_ref()));
+    fn load<S: AsRef<str>>(asset_mgr: AssetManagerRc, filename: S) -> Result<Self> {
+        let asset_file = asset_mgr.open(&format!("/{}", filename.as_ref()))?;
+        let buf = asset_file.read_str()?;
         let value: Value = serde_json::from_str(&buf)?;
 
         match get_version(&value)? {
@@ -566,7 +571,7 @@ impl Beatmap {
                 let beatmap: Beatmap_V2 = serde_json::from_value(value)?;
                 beatmap.build()
             },
-            "3.0.0" | "3.3.0" => {
+            "3.0.0" | "3.2.0" | "3.3.0" => {
                 let beatmap: Beatmap_V3 = serde_json::from_value(value)?;
                 beatmap.build()
             },
@@ -574,13 +579,13 @@ impl Beatmap {
                 let beatmap: Beatmap_V4 = serde_json::from_value(value)?;
                 beatmap.build()
             },
-            version => Err(Error::BuildError(format!("Unsupported beatmap version: {}", version)))
+            version => Err(Error::Build(format!("Unsupported beatmap version: {}", version)))
         }
     }
 
     #[cfg(feature = "test")]
     fn test() -> Result<Self> {
-        let mut cut_dirs = [
+        let mut cut_dir_it = [
             NoteCutDir::Up,
             NoteCutDir::Down,
             NoteCutDir::Left,
@@ -595,7 +600,7 @@ impl Beatmap {
         let mut notes = Vec::new();
 
         for i in 0..100 {
-            let note = Note::new(i as f32, 2, 1, NoteType::Right, cut_dirs.next().unwrap()).unwrap();
+            let note = Note::new(i as f32, 2, 1, NoteType::Right, cut_dir_it.next().unwrap()).unwrap();
             notes.push(note);
         }
         
@@ -647,7 +652,7 @@ pub enum NoteCutDir {
 impl Note {
     fn new(bpm_pos: f32, x: u8, y: u8, note_type: NoteType, cut_dir: NoteCutDir) -> Result<Self> {
         if x > 3 || y > 2 {
-            return Err(Error::BuildError("Either note x or y invalid".to_string()));
+            return Err(Error::Build("Either note x or y invalid".to_string()));
         }
 
         Ok(Self {
@@ -812,7 +817,7 @@ struct ColorVisitor;
 impl<'de> Visitor<'de> for ColorVisitor {
     type Value = Color;
 
-    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+    fn expecting(&self, formatter: &mut Formatter) -> fmt_Result {
         formatter.write_str("valid color")
     }
 
@@ -835,7 +840,7 @@ struct NoteCutDirVisitor;
 impl<'de> Visitor<'de> for NoteCutDirVisitor {
     type Value = NoteCutDir;
 
-    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+    fn expecting(&self, formatter: &mut Formatter) -> fmt_Result {
         formatter.write_str("valid cut direction")
     }
 
@@ -862,14 +867,14 @@ fn get_version(top_value: &Value) -> Result<&str> {
                 if let Value::String(version) = version_value {
                     return Ok(version);
                 } else {
-                    return Err(Error::BuildError("Version should be a string".to_string()));
+                    return Err(Error::Build("Version should be a string".to_string()));
                 }
             }
         }
 
-        Err(Error::BuildError("Version not found".to_string()))
+        Err(Error::Build("Version not found".to_string()))
     } else {
-        Err(Error::BuildError("Object expected at top-level".to_string()))
+        Err(Error::Build("Object expected at top-level".to_string()))
     }
 }
 

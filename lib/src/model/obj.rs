@@ -26,7 +26,8 @@ impl Obj {
 
         // Parse obj.
 
-        let mut reader = BufReader::new(asset_mgr.open(&format!("obj/{}.obj", name.as_ref())));
+        let asset_file = asset_mgr.open_or_err(&format!("/obj/{}.obj", name.as_ref()));
+        let mut reader = BufReader::new(asset_file.read_or_err());
 
         let mut submeshes: Box<[_]> = iter::repeat_with(|| None).take(submesh_infos.len()).collect(); // iter::repeat can'be used since Submesh doesn't implement Clone.
         let mut inst_index_opt = None;

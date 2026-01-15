@@ -137,6 +137,12 @@ impl ModelHandle {
             model_indexes.remove(&self.model_index);
         }
     }
+
+    pub fn get_visible(&self, inst_index: u32) -> bool {
+        let model_indexes = &self.visibles.borrow()[inst_index as usize];
+
+        model_indexes.contains(&self.model_index)
+    }
 }
 
 pub struct ModelRenderer {
@@ -228,13 +234,14 @@ impl ModelRenderer {
 
                 let pipeline = pipelines.entry((pipeline_layout_key, vertex_sh_type.clone(), inst_sh_type.clone(), primitive_st_type.clone())).or_insert_with(|| {
                     let shader = shaders.entry((vertex_sh_type.clone(), inst_sh_type.clone())).or_insert_with(|| {
-                        let name = format!("shader/{}_{}.wgsl", vertex_sh_type.get_name(), inst_sh_type.get_name());
+                        let name = format!("/shader/{}_{}.wgsl", vertex_sh_type.get_name(), inst_sh_type.get_name());
 
                         // Pre-process shaders, so we don't need to duplicate them for single
                         // or multiview (stereo) rendering.
                         // TODO: Embed compiled shaders into binary (window, xr)?
 
-                        let source = asset_mgr.read_file(&name)
+                        let asset_file = asset_mgr.open_or_err(&name);
+                        let source = asset_file.read_str_or_err()
                             .replace("#UNI#", &uni)
                             .replace("#VIEW_INDEX_DEF#", output_info.get_view_index_def())
                             .replace("#VIEW_INDEX_VAL#", output_info.get_view_index_val());
@@ -359,7 +366,7 @@ impl ModelRenderer {
                                 let inst_sh_buf = &mut inst_sh_buf[0];
                                 model.fill_window(inst_index, inst_sh_buf);
                             },
-                        };
+                        }
                     }
 
                     if !mesh_bound {

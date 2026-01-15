@@ -32,22 +32,21 @@ impl ModelFactory for FloorParam {
     fn get_mesh(_asset_mgr: AssetManagerRc, device: &Device) -> Mesh {
         // We don't have .obj file for floor, calculate mesh.
 
-        let mut vertexes = Vec::new();
-        let mut indexes: Vec<u16> = Vec::new();
+        let vertexes = [
+            VertexPos { pos: [-RADIUS, -RADIUS, 0.0] },
+            VertexPos { pos: [RADIUS, -RADIUS, 0.0] },
+            VertexPos { pos: [-RADIUS, RADIUS, 0.0] },
+            VertexPos { pos: [RADIUS, RADIUS, 0.0] },
+        ];
 
-        // Create quad.
-
-        vertexes.push(VertexPos { pos: [-RADIUS, -RADIUS, 0.0] });
-        vertexes.push(VertexPos { pos: [RADIUS, -RADIUS, 0.0] });
-        vertexes.push(VertexPos { pos: [-RADIUS, RADIUS, 0.0] });
-        vertexes.push(VertexPos { pos: [RADIUS, RADIUS, 0.0] });
-
-        indexes.push(0);
-        indexes.push(1);
-        indexes.push(2);
-        indexes.push(1);
-        indexes.push(3);
-        indexes.push(2);
+        let indexes: [u16; 6] = [
+            0,
+            1,
+            2,
+            1,
+            3,
+            2,
+        ];
 
         let submesh = Submesh::new(0, indexes.len() as u32, 0, PrimitiveStateType::TriangleList, InstShaderType::Grid); // 0
 

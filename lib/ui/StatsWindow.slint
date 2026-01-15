@@ -1,0 +1,48 @@
+import { Const } from "Const.slint";
+import { WindowBase } from "WindowBase.slint";
+
+export component StatsWindow inherits WindowBase {
+    default-font-family: Const.default-font-family;
+    default-font-size: Const.default-font-size;
+    background: #000000;
+
+    in property<string> comment;
+    in property<int> fps;
+    in property<int> frame-time;
+    in property<int> draw-calls;
+    in property<int> inst-num;
+    in property<int> inst-buf;
+
+    VerticalLayout {
+        Text {
+            text: root.comment;
+            color: #ffffff;
+            wrap: word-wrap;
+        }
+
+        Text {
+            text: "Frames/s: \{root.fps}";
+            color: #ffffff;
+        }
+
+        Text {
+            text: "Frame time [ms]: \{root.frame-time}";
+            color: #ffffff;
+        }
+
+        Text {
+            text: "Draw calls/frame: \{root.draw-calls}";
+            color: #ffffff;
+        }
+
+        Text {
+            text: "Instances: \{root.inst-num}";
+            color: #ffffff;
+        }
+
+        Text {
+            text: "Instance buf [kB/s]: \{root.fps * root.inst-buf / 1024}";
+            color: #ffffff;
+        }
+    }
+}
