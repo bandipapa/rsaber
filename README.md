@@ -26,26 +26,29 @@ If you prefer, you can compile rsaber from sources. First of all, you need to ha
 
 Prerequisite:
 - Install Android Studio, then go to SDK Manager and install:
-  - SDK Platforms -> Android 12L (API level 32)
+  - SDK Platforms -> API level: see ANDROID_SDK_LEVEL below
   - SDK Tools -> NDK
 
-- Setup rust toolchain, replace username and version as needed:
+- Setup rust toolchain, replace username as needed:
   ```
   rustup target add aarch64-linux-android
-  cargo install cargo-apk
+  cargo install cargo-ndk
+  set JAVA_HOME=c:\Program Files\Android\Android Studio\jbr
   set ANDROID_HOME=c:\Users\<username>\AppData\Local\Android\Sdk
-  set ANDROID_NDK_ROOT=c:\Users\<username>\AppData\Local\Android\Sdk\ndk\<version>
-  set PATH=%PATH%;c:\Program Files\Android\Android Studio\jbr\bin
+  set ANDROID_SDK_LEVEL=32
   ```
 
-In the past, manual downloading of OpenXR Loader was needed, but it has been integrated in the build
-process already.
-
-Clone repo, connect Quest to PC, then build & run:
+Clone repo, connect Quest to PC, then build in debug mode & run:
 ```
 git clone https://github.com/bandipapa/rsaber.git
-cd rsaber\android
-cargo apk run
+cd rsaber\android\build
+gradlew runDebug
+```
+
+Building in release mode can be done by setting ANDROID_KEYSTORE, ANDROID_KEYSTORE_PW, ANDROID_KEYALIAS, ANDROID_KEYALIAS_PW
+environment variables, and execute:
+```
+gradlew runRelease
 ```
 
 ### pc

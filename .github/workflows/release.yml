@@ -1,5 +1,4 @@
 # TODO: use ANDROID_HOME instead of hardcoded C:\Android\android-sdk
-# TODO: determine android platform level from Cargo.toml
 # TODO: use cache
 # TODO: integrate crate publish
 
@@ -13,6 +12,9 @@ on:
 jobs:
   release:
     runs-on: windows-latest
+
+    env:
+      ANDROID_SDK_LEVEL: 32
 
     permissions:
       contents: write
@@ -39,17 +41,20 @@ jobs:
     - name: Prepare android
       run: |
         rustup target add aarch64-linux-android
-        cargo install cargo-apk
-        C:\Android\android-sdk\cmdline-tools\latest\bin\sdkmanager --install "platforms;android-32"
+        cargo install cargo-ndk
+        C:\Android\android-sdk\cmdline-tools\latest\bin\sdkmanager --install "platforms;android-$Env:ANDROID_SDK_LEVEL"
 
     - name: Build android
       run: |
-        cd android
-        $Env:CARGO_APK_RELEASE_KEYSTORE = "$PWD\keystore"
-        $Env:CARGO_APK_RELEASE_KEYSTORE_PASSWORD = "${{ secrets.ANDROID_KEYSTORE_PW }}"
-        [System.Convert]::FromBase64String("${{ secrets.ANDROID_KEYSTORE }}") | Set-Content $Env:CARGO_APK_RELEASE_KEYSTORE -AsByteStream
-        cargo apk build --release
-        del $Env:CARGO_APK_RELEASE_KEYSTORE
+        cd android\build
+        $Env:ANDROID_KEYSTORE = "$PWD\keystore"
+        $Env:ANDROID_KEYSTORE_PW = "${{ secrets.ANDROID_KEYSTORE_PW }}"
+        $Env:ANDROID_KEYALIAS = "${{ secrets.ANDROID_KEYALIAS }}"
+        $Env:ANDROID_KEYALIAS_PW = "${{ secrets.ANDROID_KEYALIAS_PW }}"
+        [System.Convert]::FromBase64String("${{ secrets.ANDROID_KEYSTORE }}") | Set-Content $Env:ANDROID_KEYSTORE -AsByteStream
+        gradlew assembleRelease
+        copy app\build\outputs\apk\release\app-release.apk rsaber_android.apk
+        del $Env:ANDROID_KEYSTORE
 
     - name: Release
       uses: softprops/action-gh-release@v2
@@ -57,4 +62,4 @@ jobs:
         files: |
           target/release/rsaber_pc.exe
           target/release/rsaber_pcvr.exe
-          target/release/apk/rsaber_android.apk
+          android/build/rsaber_android.apk

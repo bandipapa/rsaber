@@ -19,12 +19,6 @@ slint = {version = "1.14.1", default-features = false, features = ["backend-andr
 
 rsaber_lib = {path = "../lib", version = "0.3.0", features = ["xr"]}
 
-[build-dependencies]
-
-reqwest = {version = "0.12.23", features = ["blocking"]} # TODO: lots of deps, use simpler library?
-sha2 = "0.10.9"
-zip = "6.0.0"
-
 [lib]
 
 crate-type = ["cdylib"]
@@ -32,36 +26,3 @@ crate-type = ["cdylib"]
 [features]
 
 test = ["rsaber_lib/test"]
-
-[package.metadata.android]
-
-package = "com.bandipapa.rsaber"
-runtime_libs = "lib"
-
-# See https://developer.oculus.com/documentation/native/android/mobile-native-manifest/
-
-[package.metadata.android.sdk]
-
-min_sdk_version = 32
-target_sdk_version = 32
-
-[[package.metadata.android.application.meta_data]]
-
-name="com.oculus.supportedDevices"
-value="quest2|questpro|quest3|quest3s"
-
-[package.metadata.android.application.activity]
-
-orientation = "landscape"
-theme = "@android:style/Theme.Black.NoTitleBar.Fullscreen"
-config_changes = "density|keyboard|keyboardHidden|navigation|orientation|screenLayout|screenSize|uiMode"
-launch_mode = "singleTask"
-resizeable_activity = false
-
-[[package.metadata.android.application.activity.intent_filter]]
-
-actions = ["android.intent.action.MAIN"]
-categories = [
-    "android.intent.category.LAUNCHER",
-    "com.oculus.intent.category.VR"
-]

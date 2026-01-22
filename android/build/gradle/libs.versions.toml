@@ -1,0 +1,14 @@
+[versions]
+
+agp = "9.0.0"
+xr = "1.1.54"
+json = "1.9.0"
+
+[plugins]
+
+android-application = { id = "com.android.application", version.ref = "agp" }
+
+[libraries]
+
+openxr-loader = { group = "org.khronos.openxr", name = "openxr_loader_for_android", version.ref = "xr" }
+kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version.ref = "json" }
