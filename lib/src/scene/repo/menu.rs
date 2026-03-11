@@ -177,7 +177,7 @@ impl Menu {
 
         let vkbd_window = model_reg.create(window_param);
         vkbd_window.set_scale(2.5, 0.8);
-        vkbd_window.set_pos(&Vector3::new(0.0, 2.5, 1.0));
+        vkbd_window.set_pos(&Vector3::new(0.0, 3.0, 0.75));
         vkbd_window.set_rot(&Quaternion::from_angle_x(Deg(-45.0 / 2.0)));
 
         // Setup about by window.
@@ -494,7 +494,7 @@ impl Menu {
                         let mut difficulty_int_active_opt = None;
 
                         if let Some(active_info) = &search_window_state.active_info_opt {
-                            let difficulty_index = window.get_difficulty_index() as usize;
+                            let difficulty_index = window.get_difficulty_index();
                             let item = model.row_data(active_info.item_index).expect("Item expected");
                             let difficulty_ints: Box<_> = item.difficulty_ints.iter().collect();
 
@@ -502,7 +502,7 @@ impl Menu {
                             // difficulty_index is still set. Check if we have at least one difficulty.
 
                             if !difficulty_ints.is_empty() {
-                                difficulty_int_active_opt = Some(difficulty_ints[difficulty_index]);
+                                difficulty_int_active_opt = Some(difficulty_ints[difficulty_index as usize]);
                             }
 
                             if item_index_selected == active_info.item_index {
@@ -570,18 +570,19 @@ impl Menu {
 
                     move || { // TODO: use window->detail_item instead of active_info.item_index?
                         let window = window_weak.unwrap();
-                        let search_window_state = search_window_state_mutex.lock().unwrap();
-                        let active_info = search_window_state.active_info_opt.as_ref().expect("Active expected");
+                        let item_index = {
+                            let search_window_state = search_window_state_mutex.lock().unwrap();
+                            let active_info = search_window_state.active_info_opt.as_ref().expect("Active expected");
+                            active_info.item_index
+                        };
 
                         let model = window.get_items();
-                        let item = model.row_data(active_info.item_index).expect("Item expected");
+                        let item = model.row_data(item_index).expect("Item expected");
 
                         let difficulty_index = window.get_difficulty_index();
                         let difficulty_ints: Box<_> = item.difficulty_ints.iter().collect();
                         let difficulty_int = difficulty_ints[difficulty_index as usize];
                         let difficulty: SongDifficulty = difficulty_int.try_into().unwrap();
-
-                        let download_url: String = item.download_url.clone().into();
 
                         window.set_mode(SearchWindowMode::Message);
                         window.set_message("Downloading...".into());
@@ -590,6 +591,7 @@ impl Menu {
 
                         // Submit song zip fetch.
 
+                        let download_url: String = item.download_url.clone().into();
                         let url = Url::parse(&download_url).expect("Invalid url");
 
                         let handle = net_manager_exec.submit(SongZipRequest::new(url), { // TODO: cache?
@@ -663,7 +665,7 @@ impl Menu {
         let search_window = model_reg.create(window_param);
         search_window.set_visible(true);
         search_window.set_scale(4.8, 3.0);
-        search_window.set_pos(&Vector3::new(0.0, 4.0, 2.0));
+        search_window.set_pos(&Vector3::new(0.0, 5.0, 2.0));
 
         // Setup powered by window.
 
@@ -750,14 +752,14 @@ impl Menu {
             },
             UpdateItemOp::PreviewStop => {
                 let active_info = state.active_info_opt.as_mut().expect("Active expected");
-                active_info.preview_active = false;
-
                 let item_index = active_info.item_index;
                 let mut item = model.row_data(item_index).expect("Item expected");
 
                 item.preview_active = false;
 
                 model.set_row_data(item_index, item);
+
+                active_info.preview_active = false;
             },
         }
     }

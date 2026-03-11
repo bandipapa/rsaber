@@ -461,7 +461,7 @@ impl XROutput {
 
         let mut xr_ok = false;
 
-        for (interaction_profile, aim, click, scroll_opt, haptic) in [
+        for (interaction_profile, aim, click, scroll_opt, haptic) in [ // TODO: use const structs here
             (
                 "/khr/simple_controller",
                 "/input/aim/pose",
