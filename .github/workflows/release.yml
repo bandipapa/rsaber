@@ -52,7 +52,7 @@ jobs:
         $Env:ANDROID_KEYALIAS = "${{ secrets.ANDROID_KEYALIAS }}"
         $Env:ANDROID_KEYALIAS_PW = "${{ secrets.ANDROID_KEYALIAS_PW }}"
         [System.Convert]::FromBase64String("${{ secrets.ANDROID_KEYSTORE }}") | Set-Content $Env:ANDROID_KEYSTORE -AsByteStream
-        gradlew assembleRelease
+        .\gradlew assembleRelease
         copy app\build\outputs\apk\release\app-release.apk rsaber_android.apk
         del $Env:ANDROID_KEYSTORE
 
