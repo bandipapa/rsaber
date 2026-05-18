@@ -6,7 +6,7 @@ name: release
 on:
   push:
     tags:
-      - "v*.*.*"
+      - 'v*.*.*'
 
 jobs:
   build:
@@ -17,11 +17,11 @@ jobs:
           target: test
         - os: ubuntu-latest
           target: pc
-          build_suffix: ""
+          build_suffix: ''
           artifact_suffix: _linux_x64
         - os: ubuntu-24.04-arm
           target: pcvr
-          build_suffix: ""
+          build_suffix: ''
           artifact_suffix: _linux_arm64
         - os: windows-latest
           target: pc
@@ -43,58 +43,61 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v6
 
+    - name: Update rust
+      run: rustup update
+
     - name: Test
-      if: matrix.target == "test"
+      if: matrix.target == 'test'
       run: |
         cd lib
         cargo test
 
     - name: Build pc
-      if: matrix.target == "pc"
+      if: matrix.target == 'pc'
       run: |
         cd pc
         cargo build --release
 
     - name: Upload pc
-      if: matrix.target == "pc"
+      if: matrix.target == 'pc'
       uses: actions/upload-artifact@v7
       with:
-        path: ${{ format("target/release/rsaber_pc{0}", matrix.build_suffix) }}
-        name: ${{ format("rsaber_pc{0}", matrix.artifact_suffix) }}
+        path: ${{ format('target/release/rsaber_pc{0}', matrix.build_suffix) }}
+        name: ${{ format('rsaber_pc{0}', matrix.artifact_suffix) }}
 
     - name: Build pcvr
-      if: matrix.target == "pcvr"
+      if: matrix.target == 'pcvr'
       run: |
         cd pcvr
         cargo build --release
 
     - name: Upload pcvr
-      if: matrix.target == "pcvr"
+      if: matrix.target == 'pcvr'
       uses: actions/upload-artifact@v7
       with:
-        path: ${{ format("target/release/rsaber_pcvr{0}", matrix.build_suffix) }}
-        name: ${{ format("rsaber_pcvr{0}", matrix.artifact_suffix) }}
+        path: ${{ format('target/release/rsaber_pcvr{0}', matrix.build_suffix) }}
+        name: ${{ format('rsaber_pcvr{0}', matrix.artifact_suffix) }}
 
     - name: Prepare android
-      if: matrix.target == "android"
+      if: matrix.target == 'android'
       run: |
         rustup target add aarch64-linux-android
         cargo install cargo-ndk
 
     - name: Build android
-      if: matrix.target == "android"
+      if: matrix.target == 'android'
       run: |
         cd android\build
-        $Env:ANDROID_KEYSTORE = "$PWD\keystore"
-        $Env:ANDROID_KEYSTORE_PW = "${{ secrets.ANDROID_KEYSTORE_PW }}"
-        $Env:ANDROID_KEYALIAS = "${{ secrets.ANDROID_KEYALIAS }}"
-        $Env:ANDROID_KEYALIAS_PW = "${{ secrets.ANDROID_KEYALIAS_PW }}"
-        [System.Convert]::FromBase64String("${{ secrets.ANDROID_KEYSTORE }}") | Set-Content $Env:ANDROID_KEYSTORE -AsByteStream
+        $Env:ANDROID_KEYSTORE = '$PWD\keystore'
+        $Env:ANDROID_KEYSTORE_PW = '${{ secrets.ANDROID_KEYSTORE_PW }}'
+        $Env:ANDROID_KEYALIAS = '${{ secrets.ANDROID_KEYALIAS }}'
+        $Env:ANDROID_KEYALIAS_PW = '${{ secrets.ANDROID_KEYALIAS_PW }}'
+        [System.Convert]::FromBase64String('${{ secrets.ANDROID_KEYSTORE }}') | Set-Content $Env:ANDROID_KEYSTORE -AsByteStream
         .\gradlew assembleRelease
         del $Env:ANDROID_KEYSTORE
 
     - name: Upload android
-      if: matrix.target == "android"
+      if: matrix.target == 'android'
       uses: actions/upload-artifact@v7
       with:
         path: app\build\outputs\apk\release\app-release.apk

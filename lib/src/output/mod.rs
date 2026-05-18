@@ -3,22 +3,23 @@ use std::num::NonZeroU32;
 use std::rc::Rc;
 
 use bytemuck::NoUninit;
-use cfg_if::cfg_if;
 use cgmath::Vector3;
 use wgpu::{Adapter, Device, Extent3d, Features, Limits, Queue, Texture, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages, TextureView};
 
-cfg_if! {
-    if #[cfg(feature = "window")] {
+cfg_select! {
+    feature = "window" => {
         mod window;
         pub use window::{WindowBegin, WindowOutput};
-    }
+    },
+    _ => {},
 }
 
-cfg_if! {
-    if #[cfg(feature = "xr")] {
+cfg_select! {
+    feature = "xr" => {
         mod xr;
         pub use xr::XROutput;
-    }
+    },
+    _ => {},
 }
 
 const DEPTH_FORMAT: TextureFormat = TextureFormat::Depth32Float;

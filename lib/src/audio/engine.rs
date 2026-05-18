@@ -7,7 +7,6 @@ use std::thread;
 
 use atomic::{Atomic, Ordering};
 use bytemuck::NoUninit;
-use cfg_if::cfg_if;
 use cpal::{BufferSize, Device, HostId, SampleFormat, Stream, StreamConfig};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
@@ -17,19 +16,19 @@ const CHANNELS: u16 = 2;
 const MIN_SAMPLE_RATE: u32 = 44100;
 const LATENCY: f32 = 0.01; // [s]
 
-cfg_if! {
-    // We need to hardcode supported audio hosts, since rsaber_hackedcpal is not
-    // ported to all available hosts supported by cpal.
+// We need to hardcode supported audio hosts, since rsaber_hackedcpal is not
+// ported to all available hosts supported by cpal.
 
-    if #[cfg(target_os = "android")] {
+cfg_select! {
+    target_os = "android" => {
         const HOST_ID: HostId = HostId::AAudio;
-    } else if #[cfg(target_os = "linux")] {
+    },
+    target_os = "linux" => {
         const HOST_ID: HostId = HostId::PipeWire;
-    } else if #[cfg(target_os = "windows")] {
+    },
+    target_os = "windows" => {
         const HOST_ID: HostId = HostId::Wasapi;
-    } else {
-        compile_error!("Unsupported OS");
-    }
+    },
 }
 
 pub trait AudioInput {

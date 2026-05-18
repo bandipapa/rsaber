@@ -251,6 +251,7 @@ impl ApplicationHandler for App {
                     }
                 }
             },
+            #[allow(clippy::collapsible_match)]
             WindowEvent::KeyboardInput { event, .. } => {
                 if !event.repeat {
                     let pressed = match event.state {

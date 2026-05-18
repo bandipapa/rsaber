@@ -4,6 +4,7 @@ name = "rsaber_pcvr"
 edition.workspace = true
 description.workspace = true
 version.workspace = true
+rust-version.workspace = true
 authors.workspace = true
 repository.workspace = true
 readme.workspace = true

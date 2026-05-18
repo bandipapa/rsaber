@@ -242,7 +242,7 @@ impl Platform for UIPlatform {
         assert!(current_soft_window.is_none()); // We can create a single window per WindowOpCreate->func.
 
         // Instantiate software renderer.
-        // TODO: In the future, replace it with GPU renderer: https://github.com/slint-ui/slint/issues/6158
+        // TODO: Once slint is working with wgpu 29, then upgrade slint and replace software renderer with FemtoVGWGPURenderer.
 
         let soft_window = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
         *current_soft_window = Some(Rc::clone(&soft_window));

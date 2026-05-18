@@ -8,8 +8,8 @@ use atomic::Atomic;
 use bytemuck::NoUninit;
 use rubato::{Fft, FixedSync, Resampler};
 use rubato::audioadapter_buffers::direct::InterleavedSlice;
-use symphonia::core::audio::SampleBuffer;
 use symphonia::core::errors::Error as symphonia_Error;
+use symphonia::core::formats::TrackType;
 use symphonia::core::io::{MediaSourceStream, ReadOnlySource};
 
 use crate::asset::AssetFileBox;
@@ -64,29 +64,32 @@ impl AudioFile {
 
         let src = ReadOnlySource::new(read);
         let mss = MediaSourceStream::new(Box::new(src), Default::default());
-        let probe = match symphonia::default::get_probe().format(&Default::default(), mss, &Default::default(), &Default::default()) { // TODO: Report error on UI
-            Ok(probe) => probe,
+        let mut format = match symphonia::default::get_probe().probe(&Default::default(), mss, Default::default(), Default::default()) { // TODO: Report error on UI
+            Ok(format) => format,
             Err(_) => return rx,
         };
-        let mut format = probe.format;
 
-        let track = match format.default_track() { // TODO: Report error on UI
+        let track = match format.default_track(TrackType::Audio) { // TODO: Report error on UI
             Some(track) => track,
             None => return rx,
         };
-        let mut decoder = match symphonia::default::get_codecs().make(&track.codec_params, &Default::default()) { // TODO: Report error on UI
+
+        let codec_params = match &track.codec_params { // TODO: Report error on UI
+            Some(codec_params) => codec_params.audio().unwrap(),
+            None => return rx,
+        };
+        if codec_params.channels.as_ref().unwrap().count() != channels { // TODO: Report error on UI
+            return rx;
+        }
+
+        let mut decoder = match symphonia::default::get_codecs().make_audio_decoder(codec_params, &Default::default()) { // TODO: Report error on UI
             Ok(decoder) => decoder,
             Err(_) => return rx,
         };
-        let track_id = track.id;
-
-        let codec_params = decoder.codec_params();
-        if codec_params.channels.unwrap().count() != channels { // TODO: Report error on UI
-            return rx;
-        }
-        let decoder_sample_rate = codec_params.sample_rate.unwrap();
 
         // Determine, if we need rate conversion.
+
+        let decoder_sample_rate = codec_params.sample_rate.unwrap();
 
         let rate_conv_opt = if decoder_sample_rate != sample_rate {
             let rate_conv = Fft::<f32>::new(decoder_sample_rate as usize, sample_rate as usize, RATE_CONV_CHUNK, 1, channels, FixedSync::Both).expect("Unable to create sample rate converter");
@@ -98,11 +101,16 @@ impl AudioFile {
         // Start decoder thread. At the end, the decoded data should be converted
         // to interleaved samples, since this is the format expected by the audio engine.
 
+        let track_id = track.id;
+
         thread::spawn(move || {
             let mut do_decode = || {
                 loop {
                     let packet = match format.next_packet() {
-                        Ok(packet) => packet,
+                        Ok(packet) => match packet {
+                            Some(packet) => packet,
+                            None => break None,
+                        },
                         Err(err) => match err {
                             symphonia_Error::IoError(err) => {
                                 if err.kind() == io::ErrorKind::UnexpectedEof {
@@ -117,11 +125,7 @@ impl AudioFile {
                         }
                     };
 
-                    while !format.metadata().is_latest() {
-                        format.metadata().pop();
-                    }
-
-                    if packet.track_id() != track_id {
+                    if packet.track_id != track_id {
                         continue;
                     }
 
@@ -129,14 +133,14 @@ impl AudioFile {
                         Ok(decoded) => decoded,
                         Err(_) => break None,
                     };
-                    let decoded_len = decoded.frames();
 
+                    let decoded_len = decoded.frames();
                     if decoded_len == 0 {
                         continue;
                     }
 
-                    let mut buf = SampleBuffer::<f32>::new(decoded.capacity() as u64, *decoded.spec());
-                    buf.copy_interleaved_ref(decoded);
+                    let mut buf = vec![0.0; decoded.samples_interleaved()];
+                    decoded.copy_to_slice_interleaved(&mut buf);
 
                     break Some((buf, decoded_len));
                 }
@@ -196,7 +200,7 @@ impl AudioFile {
                         todo = (decoded_buf.len - decoded_buf.i).min(todo);
                         assert!(todo > 0);
 
-                        let decoded_buf_sl = &decoded_buf.buf.samples()[(decoded_buf.i * channels)..((decoded_buf.i + todo) * channels)];
+                        let decoded_buf_sl = &decoded_buf.buf[(decoded_buf.i * channels)..((decoded_buf.i + todo) * channels)];
                         let in_buf_sl = &mut in_buf[(in_i * channels)..((in_i + todo) * channels)];
                         in_buf_sl.copy_from_slice(decoded_buf_sl);
 
@@ -238,7 +242,7 @@ impl AudioFile {
                 // Rate conversion is not needed.
 
                 while let Some((buf, _)) = do_decode() {
-                    if !tx.send(buf.samples()) {
+                    if !tx.send(&buf) {
                         break;
                     }
                 }
@@ -277,7 +281,7 @@ enum State {
 }
 
 struct DecodedBuf {
-    buf: SampleBuffer::<f32>,
+    buf: Vec<f32>,
     i: usize,
     len: usize,
 }
