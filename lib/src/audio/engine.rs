@@ -91,7 +91,7 @@ impl AudioEngine {
 
             (*range, range.min_sample_rate())
         };
-  
+
         let mut config: StreamConfig = range.with_sample_rate(sample_rate).config();
         config.buffer_size = BufferSize::Fixed((config.sample_rate as f32 * LATENCY) as u32); // TODO: hardcoded bufsize, determine it from device capabilities?
 

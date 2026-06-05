@@ -1,4 +1,3 @@
-use std::iter;
 use std::mem;
 use std::num::NonZeroU32;
 
@@ -135,7 +134,7 @@ type BindLayout = (BindLayoutType, u32);
 type BindLayouts = Box<[BindLayout]>;
 
 fn empty_bind_layouts() -> BindLayouts {
-    Box::from_iter(iter::empty())
+    Box::from([])
 }
 
 const INST_SIMPLECOLOR_ATTRS: [VertexAttribute; 5] = vertex_attr_array![ // See vertex shader->@location().

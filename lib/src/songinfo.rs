@@ -103,8 +103,8 @@ impl SongInfo {
             title: format!("{}{}{}", title, space, sub_title),
             song_filename: format!("/{}", song_filename),
             bpm_selector,
-            color_schemes: Box::from(color_schemes),
-            beatmap_infos: Box::from(beatmap_infos),
+            color_schemes: color_schemes.into_boxed_slice(),
+            beatmap_infos: beatmap_infos.into_boxed_slice(),
         }
     }
 
@@ -469,7 +469,7 @@ impl BPMMap {
         ranges.sort_by(|range1, range2| range1.bpm.start.partial_cmp(&range2.bpm.start).expect("Unable to compare"));
 
         Self {
-            ranges: Box::from(ranges),
+            ranges: ranges.into_boxed_slice(),
         }
     }
 
@@ -607,7 +607,7 @@ impl Beatmap {
         }
         
         Ok(Self {
-            notes: Box::from(notes),
+            notes: notes.into_boxed_slice(),
         })
     }
 
@@ -615,7 +615,7 @@ impl Beatmap {
         notes.sort_by(|note1, note2| note1.bpm_pos.partial_cmp(&note2.bpm_pos).expect("Unable to compare"));
 
         Self {
-            notes: Box::from(notes),
+            notes: notes.into_boxed_slice(),
         }
     }
 
