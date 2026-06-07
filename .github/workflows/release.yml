@@ -93,7 +93,7 @@ jobs:
       if: matrix.target == 'android'
       run: |
         cd android\build
-        $Env:ANDROID_KEYSTORE = '$PWD\keystore'
+        $Env:ANDROID_KEYSTORE = "$PWD\keystore"
         $Env:ANDROID_KEYSTORE_PW = '${{ secrets.ANDROID_KEYSTORE_PW }}'
         $Env:ANDROID_KEYALIAS = '${{ secrets.ANDROID_KEYALIAS }}'
         $Env:ANDROID_KEYALIAS_PW = '${{ secrets.ANDROID_KEYALIAS_PW }}'
