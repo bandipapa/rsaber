@@ -46,6 +46,11 @@ jobs:
     - name: Update rust
       run: rustup update
 
+    - name: Install dependencies
+      if: matrix.os == 'ubuntu-latest' || matrix.os == 'ubuntu-24.04-arm'
+      run: |
+        apt install -y libfontconfig-dev libpipewire-0.3-dev
+
     - name: Test
       if: matrix.target == 'test'
       run: |
