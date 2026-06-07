@@ -1,13 +1,13 @@
 [workspace]
 
 resolver = "3"
-members = ["android", "pc", "pcvr", "lib"]
+members = ["android", "pc", "pcvr", "lib", "macros"]
 
 [workspace.package]
 
 edition = "2024"
-description = "rsaber"
-version = "0.5.0"
+description = "Beat Saber clone written in Rust"
+version = "0.6.0"
 rust-version = "1.95.0"
 authors = ["András Szalai <andrew@bandipapa.com>"]
 repository = "https://github.com/bandipapa/rsaber"
@@ -15,3 +15,13 @@ readme = "README.md"
 license-file = "LICENSE"
 keywords = ["gamedev"]
 categories = ["games"]
+
+[workspace.lints.clippy]
+
+allow_attributes = "warn"
+disallowed_types = "deny"
+print_stderr = "warn"
+print_stdout = "warn"
+todo = "warn"
+unimplemented = "warn"
+unreachable = "warn"

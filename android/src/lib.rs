@@ -20,7 +20,8 @@ fn android_main(app: AndroidApp) {
     
     let output = XROutput::new(xr_entry);
     let stats = Stats::new("");
-    let main = Main::new(asset_mgr, output.get_info(), stats);
+    let main = Main::new(asset_mgr, output.get_output_device(), stats);
+    main.configure(output.get_width(), output.get_height());
 
     let mut terminate = false;
 

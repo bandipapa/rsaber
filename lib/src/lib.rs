@@ -18,14 +18,16 @@ use audio::{AudioEngine, AudioEngineRc};
 
 mod circbuf;
 
-mod mailbox;
+mod macros {
+    pub use rsaber_macros::*;
+}
 
-mod model;
+mod mailbox;
 
 mod net;
 
 pub mod output;
-use output::{Frame, OutputInfo};
+use output::{Frame, OutputDeviceRc};
 
 mod render;
 use render::Render;
@@ -47,7 +49,7 @@ use util::Stats;
 #[cfg(test)]
 mod tests;
 
-pub const APP_NAME: &str = env!("CARGO_PKG_DESCRIPTION");
+pub const APP_NAME: &str = "rsaber";
 
 const APP_VERSION_MAJOR: &str = env!("CARGO_PKG_VERSION_MAJOR");
 const APP_VERSION_MINOR: &str = env!("CARGO_PKG_VERSION_MINOR");
@@ -61,9 +63,9 @@ pub struct Main {
 }
 
 impl Main {
-    pub fn new<A: AssetManagerTrait + Send + Sync + 'static>(asset_mgr: A, output_info: OutputInfo, stats: Stats) -> Self {
+    pub fn new<A: AssetManagerTrait + Send + Sync + 'static>(asset_mgr: A, output_device: OutputDeviceRc, stats: Stats) -> Self {
         let audio_engine = Rc::new(AudioEngine::new());
-        let render = Render::new(Arc::new(asset_mgr), Rc::new(output_info), Arc::new(stats), Rc::clone(&audio_engine));
+        let render = Render::new(Arc::new(asset_mgr), output_device, Arc::new(stats), Rc::clone(&audio_engine));
 
         Self {
             audio_engine,
@@ -73,6 +75,10 @@ impl Main {
 
     pub fn get_audio_engine(&self) -> &AudioEngine {
         &self.audio_engine
+    }
+
+    pub fn configure(&self, width: u32, height: u32) {
+        self.render.configure(width, height);
     }
 
     pub fn render<F: Frame>(&self, frame: F, scene_input: &SceneInput) {

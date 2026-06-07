@@ -51,7 +51,7 @@ struct Asset;
 pub struct EmbedAssetManager;
 
 impl EmbedAssetManager {
-    #[allow(clippy::new_without_default)]
+    #[expect(clippy::new_without_default)]
     pub fn new() -> Self {
         Self {
         }

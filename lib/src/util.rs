@@ -1,6 +1,6 @@
-use std::collections::HashMap;
+use hashbrown::HashMap;
 use std::hash::Hash;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 
 pub struct IndexMap<T> {
     vec: Vec<T>,
@@ -8,7 +8,7 @@ pub struct IndexMap<T> {
 }
 
 impl<T: Eq + Hash + Clone> IndexMap<T> {
-    #[allow(clippy::new_without_default)]
+    #[expect(clippy::new_without_default)]
     pub fn new() -> Self {
         Self {
             vec: Vec::new(),
@@ -26,7 +26,7 @@ impl<T: Eq + Hash + Clone> IndexMap<T> {
         *index
     }
 
-    #[allow(clippy::len_without_is_empty)]
+    #[expect(clippy::len_without_is_empty)]
     pub fn len(&self) -> usize {
         self.vec.len()
     }
@@ -66,7 +66,7 @@ pub struct StatsInner {
     pub frame_time: u32,
     pub draw_calls: u32,
     pub inst_num: u32,
-    pub inst_buf: u32,
+    pub buf_upload: u32,
 }
 
 impl Stats {
@@ -77,7 +77,7 @@ impl Stats {
             frame_time: 0,
             draw_calls: 0,
             inst_num: 0,
-            inst_buf: 0,
+            buf_upload: 0,
         };
 
         Self {
@@ -89,25 +89,7 @@ impl Stats {
         *self.inner_mutex.lock().unwrap()
     }
 
-    // TODO: simply return with mutexguard, so we don't have to lock everytime
-    // when multiple values are updated?
-    pub fn set_fps(&self, fps: u32) {
-        self.inner_mutex.lock().unwrap().fps = fps;
-    }
-
-    pub fn set_frame_time(&self, frame_time: u32) {
-        self.inner_mutex.lock().unwrap().frame_time = frame_time;
-    }
-
-    pub fn set_draw_calls(&self, draw_calls: u32) {
-        self.inner_mutex.lock().unwrap().draw_calls = draw_calls;
-    }
-
-    pub fn set_inst_num(&self, inst_num: u32) {
-        self.inner_mutex.lock().unwrap().inst_num = inst_num;
-    }
-
-    pub fn set_inst_buf(&self, inst_buf: u32) {
-        self.inner_mutex.lock().unwrap().inst_buf = inst_buf;
+    pub fn get_inner_mut(&self) -> MutexGuard<'_, StatsInner> {
+        self.inner_mutex.lock().unwrap()
     }
 }

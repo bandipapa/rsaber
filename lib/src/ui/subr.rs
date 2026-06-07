@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::model::{Pointer, Saber, SaberVisibility, Window};
+use crate::render::model::{Pointer, Saber, SaberVisibility, Window};
 use crate::scene::{SceneInput, ScenePose};
 use crate::ui::UIEvent;
 
@@ -29,7 +29,6 @@ struct ActiveInfo {
 }
 
 impl UISubr {
-    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         Self {
             inner: RefCell::new(Inner {

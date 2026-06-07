@@ -1,11 +1,12 @@
 use std::cell::RefCell;
 
-use cgmath::{InnerSpace, Matrix4, Quaternion, Vector3};
-use wgpu::{BufferUsages, Device};
-use wgpu::util::{BufferInitDescriptor, DeviceExt};
+use cgmath::{InnerSpace, One, Quaternion, Vector3, Zero};
+use wgpu::{BufferUsages, PrimitiveTopology};
+use wgpu::util::BufferInitDescriptor;
 
 use crate::asset::AssetManagerRc;
-use crate::model::{Color, InstShaderImplType, InstShaderType, InstSimpleColorBuf, Mesh, Model, ModelFactory, ModelHandle, PrimitiveStateType, Submesh, VertexPos, VertexShaderType, SABER_DIR};
+use crate::output::OutputDeviceRc;
+use crate::render::model::{Color, InstShaderImplType, InstShaderType, InstSimpleColorBuf, Mesh, Model, ModelFactory, ModelHandle, Submesh, VertexPos, VertexShaderType, SABER_DIR, get_default_primitive_state};
 use crate::ui::UIManagerRc;
 
 pub struct PointerParam {
@@ -23,11 +24,7 @@ impl PointerParam {
 impl ModelFactory for PointerParam {
     type Model = Pointer;
 
-    fn get_name() -> &'static str {
-        "pointer"
-    }
-
-    fn get_mesh(_asset_mgr: AssetManagerRc, device: &Device) -> Mesh {
+    fn get_mesh(_asset_mgr: AssetManagerRc, output_device: OutputDeviceRc) -> Mesh {
         // We don't have .obj file for pointer, calculate mesh.
 
         let dir = SABER_DIR.normalize();
@@ -42,17 +39,20 @@ impl ModelFactory for PointerParam {
             1,
         ];
 
-        let submesh = Submesh::new(0, indexes.len() as u32, 0, PrimitiveStateType::LineList, InstShaderType::SimpleColor); // 0
+        let mut primitive_state = get_default_primitive_state();
+        primitive_state.topology = PrimitiveTopology::LineList;
+
+        let submesh = Submesh::new(0, indexes.len() as u32, 0, primitive_state, InstShaderType::SimpleColor); // 0
 
         // Create buffers.
 
-        let vertex_buf = device.create_buffer_init(&BufferInitDescriptor {
+        let vertex_buf = output_device.create_buffer_init(&BufferInitDescriptor {
             label: None,
             contents: bytemuck::cast_slice(&vertexes),
             usage: BufferUsages::VERTEX,
         });
 
-        let index_buf = device.create_buffer_init(&BufferInitDescriptor {
+        let index_buf = output_device.create_buffer_init(&BufferInitDescriptor {
             label: None,
             contents: bytemuck::cast_slice(&indexes),
             usage: BufferUsages::INDEX,
@@ -63,7 +63,7 @@ impl ModelFactory for PointerParam {
         Mesh::new(vertex_buf, index_buf, VertexShaderType::Pos, submeshes)
     }
 
-    fn create(self, handle: ModelHandle, _device: &Device, _inst_sh_impls: &mut [InstShaderImplType], _ui_manager: UIManagerRc) -> Self::Model {
+    fn create(self, handle: ModelHandle, _output_device: OutputDeviceRc, _inst_sh_impls: &mut [InstShaderImplType], _ui_manager: UIManagerRc) -> Self::Model {
         Pointer::new(self, handle)
     }
 }
@@ -87,8 +87,8 @@ impl Pointer { // TODO: would be nice if we can integrate this one to saber mode
             handle,
             inner: RefCell::new(Inner {
                 scale: 1.0,
-                pos: Vector3::new(0.0, 0.0, 0.0),
-                rot: Quaternion::new(1.0, 0.0, 0.0, 0.0),
+                pos: Vector3::zero(),
+                rot: Quaternion::one(),
             }),
         }
     }
@@ -115,7 +115,6 @@ impl Model for Pointer {
         assert!(inst_index == 0);
 
         let inner = self.inner.borrow();
-        let model_m = Matrix4::from_translation(inner.pos) * Matrix4::from(inner.rot) * Matrix4::from_scale(inner.scale);
-        InstSimpleColorBuf::fill(&self.param.color, &model_m)
+        InstSimpleColorBuf::fill(&self.param.color, &Vector3::new(inner.scale, inner.scale, inner.scale), &inner.rot, &inner.pos)
     }
 }

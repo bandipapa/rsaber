@@ -44,7 +44,7 @@ struct AppData {
     cursor_pos: Option<(u32, u32)>,
     cursor_click: bool,
     cursor_scroll: ScenePoseScroll,
-    active: bool,
+    size_opt: Option<(u32, u32)>,
 }
 
 impl App {
@@ -69,10 +69,7 @@ impl ApplicationHandler for App {
             let window = Arc::new(event_loop.create_window(window_attrs).expect("Unable to create window"));
             let output = WindowOutput::new(InstanceDescriptor::new_with_display_handle(Box::new(event_loop.owned_display_handle())), SurfaceTarget::from(Arc::clone(&window))).block_on();
             let stats = Stats::new(COMMENT);
-            let main = Main::new(self.asset_mgr.take().unwrap(), output.get_info(), stats);
-
-            let audio_engine = main.get_audio_engine();
-            audio_engine.start();
+            let main = Main::new(self.asset_mgr.take().unwrap(), output.get_output_device(), stats);
 
             self.data = Some(AppData {
                 window,
@@ -86,7 +83,7 @@ impl ApplicationHandler for App {
                 cursor_pos: None,
                 cursor_click: false,
                 cursor_scroll: (0.0, 0.0),
-                active: true,
+                size_opt: None,
             });
         }
     }
@@ -97,18 +94,20 @@ impl ApplicationHandler for App {
             None => return,
         };
 
-        let size = data.window.inner_size();
+        let window = &data.window;
         let output = &data.output;
+        let main = &data.main;
         let keys = &mut data.keys;
         let prev_ts_opt = &mut data.prev_ts_opt;
         let cursor_pos = &mut data.cursor_pos;
         let cursor_click = &mut data.cursor_click;
         let cursor_scroll = &mut data.cursor_scroll;
-        let active = &mut data.active;
+        let size_opt = &mut data.size_opt;
 
         match event {
             WindowEvent::Resized(_) => {
-                let audio_engine = data.main.get_audio_engine();
+                let size = window.inner_size();
+                let audio_engine = main.get_audio_engine();
 
                 if size.width == 0 || size.height == 0 {
                     audio_engine.pause();
@@ -117,141 +116,144 @@ impl ApplicationHandler for App {
                     *cursor_pos = None;
                     *cursor_click = false;
                     *cursor_scroll = (0.0, 0.0);
-                    *active = false;
+                    *size_opt = None;
                 } else {
                     output.resize(size.width, size.height);
+                    main.configure(size.width, size.height);
                     audio_engine.start();
-                    *active = true;
+                    *size_opt = Some((size.width, size.height));
                 }
             },
             WindowEvent::RedrawRequested => {
-                // Handle input.
+                // If we are minimized, we can still receive RedrawRequested. Do nothing
+                // in this case.
 
-                let ts: Instant = Instant::now();
+                if let Some((width, height)) = size_opt {
+                    // Handle input.
 
-                let pos = &mut data.pos;
-                let pitch = &mut data.pitch;
-                let yaw = &mut data.yaw;
+                    let ts: Instant = Instant::now();
 
-                if keys.contains(&KeyCode::KeyR) { // Reset
-                    *pos = DEFAULT_POS;
-                    *pitch = 0.0;
-                    *yaw = 0.0;
-                } else if let Some(prev_ts) = prev_ts_opt {
-                    let ts_diff = ts.duration_since(*prev_ts).as_secs_f32();
-                    let value = ROT_SPEED * ts_diff;
+                    let pos = &mut data.pos;
+                    let pitch = &mut data.pitch;
+                    let yaw = &mut data.yaw;
 
-                    // Handle pitch.
+                    if keys.contains(&KeyCode::KeyR) { // Reset
+                        *pos = DEFAULT_POS;
+                        *pitch = 0.0;
+                        *yaw = 0.0;
+                    } else if let Some(prev_ts) = prev_ts_opt {
+                        let ts_diff = ts.duration_since(*prev_ts).as_secs_f32();
+                        let value = ROT_SPEED * ts_diff;
 
-                    if keys.contains(&KeyCode::ArrowUp) {
-                        *pitch += value;
-                    }
+                        // Handle pitch.
 
-                    if keys.contains(&KeyCode::ArrowDown) {
-                        *pitch -= value;
-                    }
-
-                    // Handle yaw.
-
-                    if keys.contains(&KeyCode::ArrowLeft) {
-                        *yaw += value;
-                    }
-
-                    if keys.contains(&KeyCode::ArrowRight) {
-                        *yaw -= value;
-                    }
-
-                    // Handle forward/backward.
-
-                    let value = MOVE_SPEED * ts_diff * (Quaternion::from_angle_z(Deg(*yaw)) * Vector3::unit_y());
-
-                    if keys.contains(&KeyCode::KeyW) {
-                        *pos += value;
-                    }
-
-                    if keys.contains(&KeyCode::KeyS) {
-                        *pos -= value;
-                    }
-
-                    // Handle left/right.
-
-                    let value = Vector3::unit_z().cross(value);
-
-                    if keys.contains(&KeyCode::KeyA) {
-                        *pos += value;
-                    }
-
-                    if keys.contains(&KeyCode::KeyD) {
-                        *pos -= value;
-                    }
-
-                    // Handle up/down.
-
-                    let value = MOVE_SPEED * ts_diff * Vector3::unit_z();
-
-                    if keys.contains(&KeyCode::KeyX) {
-                        *pos += value;
-                    }
-
-                    if keys.contains(&KeyCode::KeyZ) {
-                        *pos -= value;
-                    }
-                }
-
-                *prev_ts_opt = Some(ts);
-
-                // Render frame.
-
-                if *active {
-                    data.window.request_redraw(); // TODO: do we need this refresh thingy? or we can run render in busy loop?
-                }
-
-                let dir = Quaternion::from_angle_z(Deg(*yaw)) * Quaternion::from_angle_x(Deg(*pitch)) * Vector3::unit_y();
-
-                match output.begin(pos, &dir) {
-                    WindowBegin::Skip => (),
-                    WindowBegin::ResizeNeeded => output.resize(size.width, size.height),
-                    WindowBegin::Frame(frame) => {
-                        let mut scene_input = SceneInput {
-                            pose_l_opt: None,
-                            pose_r_opt: None,
-                        };
-
-                        let pose;
-
-                        if let Some((x, y)) = *cursor_pos {
-                            let width = size.width as f32;
-                            let height = size.height as f32;
-
-                            let ndc_x = 2.0 * x as f32 / width - 1.0;
-                            let ndc_y = -(2.0 * y as f32 / height - 1.0);
-
-                            let unit_y = frame.raycast(ndc_x, ndc_y);
-                            let unit_x = unit_y.cross(Vector3::unit_z()).normalize();
-                            let unit_z = unit_x.cross(unit_y);
-
-                            // Regarding from_angle_x(-90):
-                            // - Lets assume that we are at the origin, and looking into the direction of +y.
-                            // - If the mouse is at the center of the screen, then the rotation described
-                            //   by unit_* vectors is an identity rotation. The mouse is pointing to +y.
-                            // - The neutral/identity direction of the saber is +z (see SABER_DIR).
-                            // - Therefore, we need to apply a rotation to the mouse direction to
-                            //   simulate saber direction.
-
-                            let rot_m = Matrix3::from_cols(unit_x, unit_y, unit_z) * Matrix3::from_angle_x(Deg(-90.0));
-                            let rot = Quaternion::from(rot_m);
-
-                            pose = Pose::new(pos, &rot, *cursor_click, *cursor_scroll);
-                            scene_input.pose_r_opt = Some(&pose); // Right saber is active by default.
-
-                            *cursor_scroll = (0.0, 0.0);
+                        if keys.contains(&KeyCode::ArrowUp) {
+                            *pitch += value;
                         }
 
-                        data.main.render(frame, &scene_input);
+                        if keys.contains(&KeyCode::ArrowDown) {
+                            *pitch -= value;
+                        }
+
+                        // Handle yaw.
+
+                        if keys.contains(&KeyCode::ArrowLeft) {
+                            *yaw += value;
+                        }
+
+                        if keys.contains(&KeyCode::ArrowRight) {
+                            *yaw -= value;
+                        }
+
+                        // Handle forward/backward.
+
+                        let value = MOVE_SPEED * ts_diff * (Quaternion::from_angle_z(Deg(*yaw)) * Vector3::unit_y());
+
+                        if keys.contains(&KeyCode::KeyW) {
+                            *pos += value;
+                        }
+
+                        if keys.contains(&KeyCode::KeyS) {
+                            *pos -= value;
+                        }
+
+                        // Handle left/right.
+
+                        let value = Vector3::unit_z().cross(value);
+
+                        if keys.contains(&KeyCode::KeyA) {
+                            *pos += value;
+                        }
+
+                        if keys.contains(&KeyCode::KeyD) {
+                            *pos -= value;
+                        }
+
+                        // Handle up/down.
+
+                        let value = MOVE_SPEED * ts_diff * Vector3::unit_z();
+
+                        if keys.contains(&KeyCode::KeyX) {
+                            *pos += value;
+                        }
+
+                        if keys.contains(&KeyCode::KeyZ) {
+                            *pos -= value;
+                        }
                     }
+
+                    *prev_ts_opt = Some(ts);
+
+                    // Render frame.
+
+                    let dir = Quaternion::from_angle_z(Deg(*yaw)) * Quaternion::from_angle_x(Deg(*pitch)) * Vector3::unit_y();
+
+                    match output.begin(pos, &dir) {
+                        WindowBegin::Skip => (),
+                        WindowBegin::ResizeNeeded => {
+                            output.resize(*width, *height);
+                            main.configure(*width, *height);
+                        },
+                        WindowBegin::Frame(frame) => {
+                            let mut scene_input = SceneInput {
+                                pose_l_opt: None,
+                                pose_r_opt: None,
+                            };
+
+                            let pose;
+
+                            if let Some((x, y)) = *cursor_pos {
+                                let ndc_x = 2.0 * x as f32 / *width as f32 - 1.0;
+                                let ndc_y = -(2.0 * y as f32 / *height as f32 - 1.0);
+
+                                let unit_y = frame.raycast(ndc_x, ndc_y);
+                                let unit_x = unit_y.cross(Vector3::unit_z()).normalize();
+                                let unit_z = unit_x.cross(unit_y);
+
+                                // Regarding from_angle_x(-90):
+                                // - Lets assume that we are at the origin, and looking into the direction of +y.
+                                // - If the mouse is at the center of the screen, then the rotation described
+                                //   by unit_* vectors is an identity rotation. The mouse is pointing to +y.
+                                // - The neutral/identity direction of the saber is +z (see SABER_DIR).
+                                // - Therefore, we need to apply a rotation to the mouse direction to
+                                //   simulate saber direction.
+
+                                let rot_m = Matrix3::from_cols(unit_x, unit_y, unit_z) * Matrix3::from_angle_x(Deg(-90.0));
+                                let rot = Quaternion::from(rot_m);
+
+                                pose = Pose::new(pos, &rot, *cursor_click, *cursor_scroll);
+                                scene_input.pose_r_opt = Some(&pose); // Right saber is active by default.
+
+                                *cursor_scroll = (0.0, 0.0);
+                            }
+
+                            main.render(frame, &scene_input);
+                        }
+                    }
+
+                    window.request_redraw(); // TODO: do we need this refresh thingy? or we can run render in busy loop?
                 }
             },
-            #[allow(clippy::collapsible_match)]
             WindowEvent::KeyboardInput { event, .. } => {
                 if !event.repeat {
                     let pressed = match event.state {

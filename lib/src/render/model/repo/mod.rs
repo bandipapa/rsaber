@@ -4,6 +4,9 @@ pub use cube::*;
 mod floor;
 pub use floor::*;
 
+mod outlinebox;
+pub use outlinebox::*;
+
 mod pointer;
 pub use pointer::*;
 

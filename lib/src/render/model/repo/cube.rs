@@ -1,11 +1,11 @@
 // TODO: rename to Note, to be consistent with songinfo?
 use std::cell::RefCell;
 
-use cgmath::{Matrix4, Quaternion, Vector3};
-use wgpu::Device;
+use cgmath::{One, Quaternion, Vector3, Zero};
 
 use crate::asset::AssetManagerRc;
-use crate::model::{Color, InstPhongColorBuf, InstShaderImplType, InstShaderType, Mesh, Model, ModelFactory, ModelHandle, Obj, PhongParam};
+use crate::output::OutputDeviceRc;
+use crate::render::model::{Color, InstPhongColorBuf, InstShaderImplType, InstShaderType, Mesh, Model, ModelFactory, ModelHandle, Obj, PhongParam};
 use crate::ui::UIManagerRc;
 
 pub enum CubeSymbol {
@@ -36,13 +36,9 @@ impl CubeParam {
 impl ModelFactory for CubeParam {
     type Model = Cube;
 
-    fn get_name() -> &'static str {
-        "cube"
-    }
-
-    fn get_mesh(asset_mgr: AssetManagerRc, device: &Device) -> Mesh {
+    fn get_mesh(asset_mgr: AssetManagerRc, output_device: OutputDeviceRc) -> Mesh {
         // TODO: Make it possible to use the same submesh, e.g. body_l and body_r are the same, but mirrored.
-        Obj::open(asset_mgr, device, "cube", &[
+        Obj::open(asset_mgr, output_device, "cube", &[
             ("body_l", &InstShaderType::PhongColor), // 0
             ("body_r", &InstShaderType::PhongColor), // 1
             ("arrow", &InstShaderType::PhongColor), // 2
@@ -50,7 +46,7 @@ impl ModelFactory for CubeParam {
         ])
     }
 
-    fn create(self, handle: ModelHandle, _device: &Device, _inst_sh_impls: &mut [InstShaderImplType], _ui_manager: UIManagerRc) -> Self::Model {
+    fn create(self, handle: ModelHandle, _output_device: OutputDeviceRc, _inst_sh_impls: &mut [InstShaderImplType], _ui_manager: UIManagerRc) -> Self::Model {
         Cube::new(self, handle)
     }
 }
@@ -88,12 +84,12 @@ impl Cube {
             inner: RefCell::new(Inner {
                 mode: CubeMode::Single,
                 scale: 1.0,
-                pos: Vector3::new(0.0, 0.0, 0.0),
-                pos_l: Vector3::new(0.0, 0.0, 0.0),
-                pos_r: Vector3::new(0.0, 0.0, 0.0),
-                rot: Quaternion::new(1.0, 0.0, 0.0, 0.0),
-                rot_l: Quaternion::new(1.0, 0.0, 0.0, 0.0),
-                rot_r: Quaternion::new(1.0, 0.0, 0.0, 0.0),
+                pos: Vector3::zero(),
+                pos_l: Vector3::zero(),
+                pos_r: Vector3::zero(),
+                rot: Quaternion::one(),
+                rot_l: Quaternion::one(),
+                rot_r: Quaternion::one(),
             }),
         }
     }
@@ -200,7 +196,6 @@ impl Model for Cube {
             }
         };
 
-        let model_m = Matrix4::from_translation(pos) * Matrix4::from(rot) * Matrix4::from_scale(inner.scale);
-        InstPhongColorBuf::fill(color, phong_param, &model_m)
+        InstPhongColorBuf::fill(color, phong_param, &Vector3::new(inner.scale, inner.scale, inner.scale), &rot, &pos)
     }
 }

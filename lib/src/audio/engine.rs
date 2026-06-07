@@ -70,7 +70,6 @@ struct SourceInfo {
 }
 
 impl AudioEngine {
-    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         let host = cpal::host_from_id(HOST_ID).expect("Unable to open audio host");
         let device = host.default_output_device().expect("Unable to determine default audio device");

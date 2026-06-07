@@ -1,10 +1,10 @@
 use std::cell::RefCell;
 
-use cgmath::{Matrix4, Quaternion, Vector3};
-use wgpu::Device;
+use cgmath::{One, Quaternion, Vector3, Zero};
 
 use crate::asset::AssetManagerRc;
-use crate::model::{Color, InstPhongColorBuf, InstShaderImplType, InstShaderType, Mesh, Model, ModelFactory, ModelHandle, Obj, PhongParam};
+use crate::output::OutputDeviceRc;
+use crate::render::model::{Color, InstPhongColorBuf, InstShaderImplType, InstShaderType, Mesh, Model, ModelFactory, ModelHandle, Obj, PhongParam};
 use crate::ui::UIManagerRc;
 
 pub const SABER_DIR: Vector3<f32> = Vector3::new(0.0, 0.0, 1.0); // Saber direction in case of neutral/identity rotation, including saber length.
@@ -36,18 +36,14 @@ impl SaberParam {
 impl ModelFactory for SaberParam {
     type Model = Saber;
 
-    fn get_name() -> &'static str {
-        "saber"
-    }
-
-    fn get_mesh(asset_mgr: AssetManagerRc, device: &Device) -> Mesh {
-        Obj::open(asset_mgr, device, "saber", &[
+    fn get_mesh(asset_mgr: AssetManagerRc, output_device: OutputDeviceRc) -> Mesh {
+        Obj::open(asset_mgr, output_device, "saber", &[
             ("handle", &InstShaderType::PhongColor), // 0
             ("ray", &InstShaderType::PhongColor), // 1
         ])
     }
 
-    fn create(self, handle: ModelHandle, _device: &Device, _inst_sh_impls: &mut [InstShaderImplType], _ui_manager: UIManagerRc) -> Self::Model {
+    fn create(self, handle: ModelHandle, _output_device: OutputDeviceRc, _inst_sh_impls: &mut [InstShaderImplType], _ui_manager: UIManagerRc) -> Self::Model {
         Saber::new(self, handle)
     }
 }
@@ -69,8 +65,8 @@ impl Saber {
             param,
             handle,
             inner: RefCell::new(Inner {
-                pos: Vector3::new(0.0, 0.0, 0.0),
-                rot: Quaternion::new(1.0, 0.0, 0.0, 0.0),
+                pos: Vector3::zero(),
+                rot: Quaternion::one(),
             }),
         }
     }
@@ -104,7 +100,6 @@ impl Model for Saber {
         };
 
         let inner = self.inner.borrow();
-        let model_m = Matrix4::from_translation(inner.pos) * Matrix4::from(inner.rot);
-        InstPhongColorBuf::fill(color, phong_param, &model_m)
+        InstPhongColorBuf::fill(color, phong_param, &Vector3::new(1.0, 1.0, 1.0), &inner.rot, &inner.pos)
     }
 }

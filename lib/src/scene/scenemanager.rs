@@ -4,26 +4,26 @@ use std::sync::Arc;
 
 use cgmath::{Quaternion, Vector3};
 use tokio::runtime::Runtime;
-use wgpu::{BindGroupLayout, RenderPass};
+use wgpu::CommandEncoder;
 
 use crate::asset::AssetManagerRc;
 use crate::audio::AudioEngineRc;
-use crate::model::{ModelRegistry, ModelRenderer};
 use crate::net::NetManager;
-use crate::output::OutputInfoRc;
-use crate::ui::{UILoop, UIManager, UIManagerRc, UISubr};
+use crate::output::{Frame, OutputDeviceRc};
+use crate::render::RenderGraph;
+use crate::ui::{UIManager, UIManagerRc, UISubr};
 use crate::util::StatsRc;
 
 pub trait SceneFactory {
     type Scene: Scene + 'static;
     type Error;
 
-    #[allow(clippy::too_many_arguments)]
-    fn load(self, asset_mgr: AssetManagerRc, model_reg: &mut ModelRegistry, output_info: OutputInfoRc, stats: StatsRc, audio_engine: AudioEngineRc, ui_loop: &UILoop, net_manager: &NetManager) -> Result<Self::Scene, Self::Error>; // TODO: Put all these parameters into a struct?
+    fn load(self, asset_mgr: AssetManagerRc, output_device: OutputDeviceRc, stats: StatsRc, audio_engine: AudioEngineRc, ui_manager: UIManagerRc, net_manager: &NetManager) -> Result<Self::Scene, Self::Error>; // TODO: Put all these parameters into a struct?
 }
 
 pub trait Scene { // TODO: add lifecycle methods?
     fn update(&self, scene_mgr: &SceneManager, scene_input: &SceneInput);
+    fn get_rg(&self) -> &RenderGraph;
 }
 
 pub struct SceneInput<'a> {
@@ -45,25 +45,31 @@ pub trait ScenePose {
 
 pub type ScenePoseScroll = (f32, f32);
 
+type SceneBox = Box<dyn Scene>;
+
 pub struct SceneManager {
     asset_mgr: AssetManagerRc,
-    output_info: OutputInfoRc,
+    output_device: OutputDeviceRc,
     stats: StatsRc,
-    uni_bg_layout: BindGroupLayout,
     audio_engine: AudioEngineRc,
     ui_manager: UIManagerRc,
     ui_subr: UISubr,
     net_manager: NetManager,
-    scene_info_opt: RefCell<Option<SceneInfo>>,
-    next_scene_info_opt: RefCell<Option<SceneInfo>>,
+    next_scene_opt: RefCell<Option<SceneBox>>,
     in_render: Cell<bool>,
+    inner: RefCell<Inner>,
+}
+
+struct Inner {
+    scene_opt: Option<SceneBox>,
+    size_opt: Option<(u32, u32)>,
 }
 
 impl SceneManager {
-    pub fn new(asset_mgr: AssetManagerRc, output_info: OutputInfoRc, stats: StatsRc, uni_bg_layout: BindGroupLayout, audio_engine: AudioEngineRc) -> Self {
+    pub fn new(asset_mgr: AssetManagerRc, output_device: OutputDeviceRc, stats: StatsRc, audio_engine: AudioEngineRc) -> Self {
         // Init UI subsystem.
 
-        let ui_manager = Rc::new(UIManager::new(output_info.get_queue().clone()));
+        let ui_manager = Rc::new(UIManager::new(Rc::clone(&output_device)));
         let ui_subr = UISubr::new();
 
         // Init async runtime: at the moment it is created outside of NetManager,
@@ -73,33 +79,39 @@ impl SceneManager {
         let async_runtime = Arc::new(Runtime::new().expect("Failed to initialize async runtime")); // TODO: Specify config parameters?
         let net_manager = NetManager::new(async_runtime);
 
+        let inner = Inner {
+            scene_opt: None,
+            size_opt: None,
+        };
+
         Self {
             asset_mgr,
-            output_info,
+            output_device,
             stats,
-            uni_bg_layout,
             audio_engine,
             ui_manager,
             ui_subr,
             net_manager,
-            scene_info_opt: RefCell::new(None),
-            next_scene_info_opt: RefCell::new(None),
+            next_scene_opt: RefCell::new(None),
             in_render: Cell::new(false),
+            inner: RefCell::new(inner),
         }
     }
 
     pub fn load<F: SceneFactory>(&self, factory: F) -> Result<(), F::Error> {
         {
-            let mut next_scene_info_opt = self.next_scene_info_opt.borrow_mut();
-            assert!(next_scene_info_opt.is_none());
+            let mut next_scene_opt = self.next_scene_opt.borrow_mut();
+            assert!(next_scene_opt.is_none());
 
-            // TODO: Implement cache, since ModelRegistry/Obj is going to reload/compile assets on scene switch.
-            let mut model_reg = ModelRegistry::new(Arc::clone(&self.asset_mgr), Rc::clone(&self.output_info), Rc::clone(&self.ui_manager));
-            let scene = Box::new(factory.load(Arc::clone(&self.asset_mgr), &mut model_reg, Rc::clone(&self.output_info), Arc::clone(&self.stats), Rc::clone(&self.audio_engine), self.ui_manager.get_ui_loop(), &self.net_manager)?); // TODO: Load next scene: this is going to block the renderloop. Do it on different thread?
-            let model_renderer = model_reg.build(Arc::clone(&self.stats), &self.uni_bg_layout);
+            let next_scene = factory.load(Arc::clone(&self.asset_mgr), Rc::clone(&self.output_device), Arc::clone(&self.stats), Rc::clone(&self.audio_engine), Rc::clone(&self.ui_manager), &self.net_manager);
 
-            let next_scene_info = SceneInfo::new(scene, model_renderer);
-            *next_scene_info_opt = Some(next_scene_info);
+            // Drop cache after scene load, so the next load will be
+            // started with empty cache.
+
+            self.output_device.clear_cache();
+
+            let next_scene = Box::new(next_scene?); // TODO: Load next scene: this is going to block the renderloop. Do it on different thread?
+            *next_scene_opt = Some(next_scene);
         }
 
         if !self.in_render.get() {
@@ -109,30 +121,38 @@ impl SceneManager {
         Ok(())
     }
 
-    pub fn render(&self, scene_input: &SceneInput, render_pass: &mut RenderPass) {
-        let have_scene = {
-            let scene_info_opt = self.scene_info_opt.borrow();
+    pub fn configure(&self, width: u32, height: u32) {
+        let mut inner = self.inner.borrow_mut();
+        inner.size_opt = Some((width, height));
 
-            if let Some(scene_info) = &*scene_info_opt {
-                self.in_render.set(true); // Prevent immediate scene change, see load().
-                scene_info.scene.update(self, scene_input);
-                self.in_render.set(false);
+        let scene = inner.scene_opt.as_ref().unwrap();
+        let rg = scene.get_rg();
+        rg.configure(width, height);
+    }
 
-                true
-            } else {
-                false
-            }
-        };
+    pub fn render(&self, scene_input: &SceneInput, encoder: &mut CommandEncoder, frame: &dyn Frame) {
+        // Frame is received as a trait object, so we don't have to
+        // utilize type parameters.
 
-        if have_scene {
-            // If we have loaded a next scene:
-            // - Don't do rendering of the current scene, which will result in a black screen.
-            // - The next invocation of render() will render the next scene.
+        {
+            let inner = self.inner.borrow();
+            assert!(inner.size_opt.is_some());
+            let scene = inner.scene_opt.as_ref().unwrap();
+            
+            self.in_render.set(true); // Prevent immediate scene change, see load().
+            scene.update(self, scene_input);
+            self.in_render.set(false);
+        }
 
-            if !self.change_scene() {
-                let scene_info_opt = self.scene_info_opt.borrow();
-                scene_info_opt.as_ref().unwrap().model_renderer.render(render_pass);
-            }
+        // If we have loaded a next scene:
+        // - Don't do rendering of the current scene.
+        // - The next invocation of render() will render the next scene to have scene.update() called.
+
+        if !self.change_scene() {
+            let inner = self.inner.borrow();
+            let scene = inner.scene_opt.as_ref().unwrap();
+            let rg = scene.get_rg();
+            rg.render(encoder, frame);
         }
     }
 
@@ -141,32 +161,24 @@ impl SceneManager {
     }
 
     fn change_scene(&self) -> bool {
-        let mut next_scene_info_opt = self.next_scene_info_opt.borrow_mut();
-        if let Some(next_scene_info) = next_scene_info_opt.take() {
+        let mut next_scene_opt = self.next_scene_opt.borrow_mut();
+        if let Some(next_scene) = next_scene_opt.take() {
             // Replace current scene with next scene.
 
-            let mut scene_info_opt = self.scene_info_opt.borrow_mut();
-            *scene_info_opt = Some(next_scene_info); // TODO: Drop current scene: this is going to block the renderloop. Do it on different thread?
+            let mut inner = self.inner.borrow_mut();
+
+            if let Some((width, height)) = inner.size_opt {
+                let rg = next_scene.get_rg();
+                rg.configure(width, height);
+            }
+
+            inner.scene_opt = Some(next_scene); // TODO: Drop current scene: this is going to block the renderloop. Do it on different thread?
 
             self.ui_subr.reset();
 
             true
         } else {
             false
-        }
-    }
-}
-
-struct SceneInfo {
-    scene: Box<dyn Scene>,
-    model_renderer: ModelRenderer,
-}
-
-impl SceneInfo {
-    fn new(scene: Box<dyn Scene>, model_renderer: ModelRenderer) -> Self {
-        Self {
-            scene,
-            model_renderer,
         }
     }
 }

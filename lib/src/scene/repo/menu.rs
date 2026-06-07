@@ -9,13 +9,14 @@ use crate::APP_VERSION;
 use crate::asset::{AssetFileBox, AssetManagerRc};
 use crate::audio::{AudioEngineRc, AudioFader, AudioFaderHandle, AudioFile, AudioFileHandle};
 use crate::mailbox::{self, Receiver, TryRecvError};
-use crate::model::*;
 use crate::net::{AssetFileRequest, BeatSaverSearchRequest, ImageRequest, NetManager, SongZipRequest};
-use crate::output::OutputInfoRc;
+use crate::output::OutputDeviceRc;
+use crate::render::{RenderGraph, RenderGraphBuilder, RenderNodeInOut};
+use crate::render::model::*;
 use crate::scene::{GameParam, Scene, SceneFactory, SceneInput, SceneManager, create_floor, create_saber, create_stats_window};
 use crate::songdef::{CHAR_STANDARD, SongDifficulty};
 use crate::songinfo::{SongInfo, ColorScheme};
-use crate::ui::{AboutWindow, PoweredByWindow, SearchWindow, SearchWindowItem, SearchWindowMode, UILoop, VirtualKeyboardWindow};
+use crate::ui::{AboutWindow, PoweredByWindow, SearchWindow, SearchWindowItem, SearchWindowMode, UILoop, UIManagerRc, VirtualKeyboardWindow};
 use crate::ui::slintimpl::{self, ComponentHandle as slintimpl_ComponentHandle, Model as slintimpl_Model, WindowUtil as slintimpl_WindowUtil};
 use crate::util::StatsRc;
 
@@ -25,7 +26,7 @@ const FADE_RATE: u8 = 80; // [dB/s]
 pub struct MenuParam;
 
 impl MenuParam {
-    #[allow(clippy::new_without_default)]
+    #[expect(clippy::new_without_default)]
     pub fn new() -> Self {
         Self {
         }
@@ -36,8 +37,8 @@ impl SceneFactory for MenuParam {
     type Scene = Menu;
     type Error = ();
 
-    fn load(self, asset_mgr: AssetManagerRc, model_reg: &mut ModelRegistry, output_info: OutputInfoRc, stats: StatsRc, audio_engine: AudioEngineRc, ui_loop: &UILoop, net_manager: &NetManager) -> Result<Self::Scene, Self::Error> {
-        Menu::new(self, asset_mgr, model_reg, output_info, stats, audio_engine, ui_loop, net_manager)
+    fn load(self, asset_mgr: AssetManagerRc, output_device: OutputDeviceRc, stats: StatsRc, audio_engine: AudioEngineRc, ui_manager: UIManagerRc, net_manager: &NetManager) -> Result<Self::Scene, Self::Error> {
+        Menu::new(self, asset_mgr, output_device, stats, audio_engine, ui_manager, net_manager)
     }
 }
 
@@ -55,6 +56,7 @@ pub struct Menu {
     saber_l: Rc<Saber>,
     saber_r: Rc<Saber>,
     pointer: Rc<Pointer>,
+    rg: RenderGraph,
     inner: RefCell<Inner>,
 }
 
@@ -105,8 +107,12 @@ enum UpdateItemOp {
 }
 
 impl Menu {
-    #[allow(clippy::too_many_arguments)]
-    fn new(_param: MenuParam, asset_mgr: AssetManagerRc, model_reg: &mut ModelRegistry, output_info: OutputInfoRc, stats: StatsRc, audio_engine: AudioEngineRc, ui_loop: &UILoop, net_manager: &NetManager) -> Result<Self, ()> {
+    fn new(_param: MenuParam, asset_mgr: AssetManagerRc, output_device: OutputDeviceRc, stats: StatsRc, audio_engine: AudioEngineRc, ui_manager: UIManagerRc, net_manager: &NetManager) -> Result<Self, ()> {
+        // Prepare.
+
+        let mut model_reg = ModelRegistry::new(Arc::clone(&asset_mgr), Rc::clone(&output_device), Rc::clone(&ui_manager));
+        let ui_loop = ui_manager.get_ui_loop();
+
         // Implementation notes:
         // - Weak window references in event handlers (on_*):
         //   - If a weak reference to its parent window is unwrapped (window_weak.unwrap()),
@@ -184,6 +190,7 @@ impl Menu {
         // Setup about by window. On some platforms, the diagnostic information is
         // a multiline string, so put it into one single line.
 
+        let output_info = output_device.get_output_info();
         let diags: Vec<_> = output_info.get_diags().iter().map(|diag| diag.replace("\n", ", ").into()).collect();
 
         let window_param = WindowParam::new(500, 500, move || {
@@ -690,8 +697,8 @@ impl Menu {
 
         // Setup floor.
 
-        create_floor(model_reg);
-        create_stats_window(model_reg, stats, ui_loop);
+        create_floor(&mut model_reg);
+        create_stats_window(&mut model_reg, Arc::clone(&stats), ui_loop);
 
         // Setup sabers.
 
@@ -699,12 +706,22 @@ impl Menu {
         let color_l = color_scheme.get_color_l();
         let color_r = color_scheme.get_color_r();
 
-        let (saber_l, saber_r) = create_saber(model_reg, color_l, color_r);
+        let (saber_l, saber_r) = create_saber(&mut model_reg, color_l, color_r);
 
         // Setup pointer.
 
         let pointer_param = PointerParam::new(&POINTER_COLOR);
         let pointer = model_reg.create(pointer_param);
+
+        // Setup render graph.
+
+        let rgb = RenderGraphBuilder::new(Arc::clone(&asset_mgr), output_device, stats);
+
+        let model_renderer: Rc<ModelRenderer> = rgb
+            .create_node()
+            .build_with_param(model_reg);
+
+        let rg = rgb.build(model_renderer.get_out("out_color"));
         
         let inner = Inner {
             audio_info_opt: None,
@@ -725,6 +742,7 @@ impl Menu {
             saber_l,
             saber_r,
             pointer,
+            rg,
             inner: RefCell::new(inner),
         })
     }
@@ -936,5 +954,9 @@ impl Scene for Menu {
 
             inner.preview_info_opt = None;
         }
+    }
+
+    fn get_rg(&self) -> &RenderGraph {
+        &self.rg
     }
 }

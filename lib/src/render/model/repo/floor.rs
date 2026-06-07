@@ -1,11 +1,12 @@
 use std::cell::RefCell;
 
-use cgmath::{Matrix4, Vector3};
-use wgpu::{BufferUsages, Device};
-use wgpu::util::{BufferInitDescriptor, DeviceExt};
+use cgmath::{One, Quaternion, Vector3, Zero};
+use wgpu::BufferUsages;
+use wgpu::util::BufferInitDescriptor;
 
 use crate::asset::AssetManagerRc;
-use crate::model::{Color, InstGridBuf, InstShaderImplType, InstShaderType, Mesh, Model, ModelFactory, ModelHandle, PrimitiveStateType, Submesh, VertexPos, VertexShaderType};
+use crate::output::OutputDeviceRc;
+use crate::render::model::{Color, InstGridBuf, InstShaderImplType, InstShaderType, Mesh, Model, ModelFactory, ModelHandle, Submesh, VertexPos, VertexShaderType, get_default_primitive_state};
 use crate::ui::UIManagerRc;
 
 const RADIUS: f32 = 15.0; // TODO: make it adjustable via FloorParam?
@@ -25,11 +26,7 @@ impl FloorParam {
 impl ModelFactory for FloorParam {
     type Model = Floor;
 
-    fn get_name() -> &'static str {
-        "floor"
-    }
-
-    fn get_mesh(_asset_mgr: AssetManagerRc, device: &Device) -> Mesh {
+    fn get_mesh(_asset_mgr: AssetManagerRc, output_device: OutputDeviceRc) -> Mesh {
         // We don't have .obj file for floor, calculate mesh.
 
         let vertexes = [
@@ -48,17 +45,17 @@ impl ModelFactory for FloorParam {
             2,
         ];
 
-        let submesh = Submesh::new(0, indexes.len() as u32, 0, PrimitiveStateType::TriangleList, InstShaderType::Grid); // 0
+        let submesh = Submesh::new(0, indexes.len() as u32, 0, get_default_primitive_state(), InstShaderType::Grid); // 0
 
         // Create buffers.
 
-        let vertex_buf = device.create_buffer_init(&BufferInitDescriptor {
+        let vertex_buf = output_device.create_buffer_init(&BufferInitDescriptor {
             label: None,
             contents: bytemuck::cast_slice(&vertexes),
             usage: BufferUsages::VERTEX,
         });
 
-        let index_buf = device.create_buffer_init(&BufferInitDescriptor {
+        let index_buf = output_device.create_buffer_init(&BufferInitDescriptor {
             label: None,
             contents: bytemuck::cast_slice(&indexes),
             usage: BufferUsages::INDEX,
@@ -69,7 +66,7 @@ impl ModelFactory for FloorParam {
         Mesh::new(vertex_buf, index_buf, VertexShaderType::Pos, submeshes)
     }
 
-    fn create(self, handle: ModelHandle, _device: &Device, _inst_sh_impls: &mut [InstShaderImplType], _ui_manager: UIManagerRc) -> Self::Model {
+    fn create(self, handle: ModelHandle, _output_device: OutputDeviceRc, _inst_sh_impls: &mut [InstShaderImplType], _ui_manager: UIManagerRc) -> Self::Model {
         Floor::new(self, handle)
     }
 }
@@ -90,7 +87,7 @@ impl Floor {
             param,
             handle,
             inner: RefCell::new(Inner {
-                pos: Vector3::new(0.0, 0.0, 0.0),
+                pos: Vector3::zero(),
             }),
         }
     }
@@ -109,7 +106,6 @@ impl Model for Floor {
         assert!(inst_index == 0);
 
         let inner = self.inner.borrow();
-        let model_m = Matrix4::from_translation(inner.pos);
-        InstGridBuf::fill(&self.param.color, &model_m)
+        InstGridBuf::fill(&self.param.color, &Vector3::new(1.0, 1.0, 1.0), &Quaternion::one(), &inner.pos)
     }
 }

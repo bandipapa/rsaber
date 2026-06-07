@@ -7,10 +7,10 @@ As there are no built-in levels, they are fetched from https://beatsaver.com/.
 
 Screenshots
 
-<img src="https://raw.githubusercontent.com/bandipapa/rsaber/refs/tags/v0.5.0/doc/menu1.jpg" width="300" height="163">
-<img src="https://raw.githubusercontent.com/bandipapa/rsaber/refs/tags/v0.5.0/doc/menu2.jpg" width="300" height="163">
-<img src="https://raw.githubusercontent.com/bandipapa/rsaber/refs/tags/v0.5.0/doc/game1.jpg" width="300" height="163">
-<img src="https://raw.githubusercontent.com/bandipapa/rsaber/refs/tags/v0.5.0/doc/game2.jpg" width="300" height="163">
+<img src="https://raw.githubusercontent.com/bandipapa/rsaber/refs/tags/v0.6.0/doc/menu1.jpg" width="300" height="163">
+<img src="https://raw.githubusercontent.com/bandipapa/rsaber/refs/tags/v0.6.0/doc/menu2.jpg" width="300" height="163">
+<img src="https://raw.githubusercontent.com/bandipapa/rsaber/refs/tags/v0.6.0/doc/game1.jpg" width="300" height="163">
+<img src="https://raw.githubusercontent.com/bandipapa/rsaber/refs/tags/v0.6.0/doc/game2.jpg" width="300" height="163">
 
 ## Supported Devices
 

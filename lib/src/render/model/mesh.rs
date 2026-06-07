@@ -1,8 +1,8 @@
 use std::ops::Range;
 
-use wgpu::Buffer;
+use wgpu::{Buffer, PrimitiveState};
 
-use crate::model::{InstShaderType, PrimitiveStateType, VertexShaderType};
+use crate::render::model::{InstShaderType, VertexShaderType};
 
 pub struct Mesh {
     vertex_buf: Buffer,
@@ -12,6 +12,7 @@ pub struct Mesh {
 }
 
 impl Mesh {
+    // TODO: Add support for bufferless (to embed vertex coords into shader, e.g. for pointer).
     pub fn new(vertex_buf: Buffer, index_buf: Buffer, vertex_sh_type: VertexShaderType, submeshes: Box<[Submesh]>) -> Self {
         assert!(!submeshes.is_empty());
 
@@ -44,19 +45,19 @@ pub struct Submesh {
     index_start: u32,
     index_end: u32,
     base_vertex: i32, // It is i32, see ModelRenderer->render->draw_indexed().
-    primitive_state_type: PrimitiveStateType,
+    primitive_state: PrimitiveState,
     inst_sh_type: InstShaderType,
 }
 
 impl Submesh {
-    pub fn new(index_start: u32, index_end: u32, base_vertex: i32, primitive_state_type: PrimitiveStateType, inst_sh_type: InstShaderType) -> Self {
+    pub fn new(index_start: u32, index_end: u32, base_vertex: i32, primitive_state: PrimitiveState, inst_sh_type: InstShaderType) -> Self {
         assert!(index_start < index_end);
 
         Self {
             index_start,
             index_end,
             base_vertex,
-            primitive_state_type,
+            primitive_state,
             inst_sh_type,
         }
     }
@@ -69,8 +70,8 @@ impl Submesh {
         self.base_vertex
     }
 
-    pub fn get_primitive_state_type(&self) -> &PrimitiveStateType {
-        &self.primitive_state_type
+    pub fn get_primitive_state(&self) -> &PrimitiveState {
+        &self.primitive_state
     }
 
     pub fn get_inst_sh_type(&self) -> &InstShaderType {

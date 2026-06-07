@@ -1,6 +1,6 @@
 use std::any::Any;
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::iter;
 use std::mem;
 use std::rc::Rc;
@@ -8,13 +8,15 @@ use std::sync::Arc;
 use std::thread;
 
 use bytemuck::{Pod, Zeroable};
+use hashbrown::HashMap;
 use oneshot::Sender;
 use slint::{ComponentHandle, LogicalPosition, PhysicalSize, PlatformError, Weak};
 use slint::platform::{self, Platform, PointerEventButton, WindowAdapter, WindowEvent};
 use slint::platform::software_renderer::{MinimalSoftwareWindow, PremultipliedRgbaColor, RepaintBufferType, TargetPixel};
-use wgpu::{Extent3d, Origin3d, Queue, TexelCopyBufferLayout, TexelCopyTextureInfo, Texture, TextureAspect};
+use wgpu::{Extent3d, Origin3d, TexelCopyBufferLayout, TexelCopyTextureInfo, Texture, TextureAspect};
 
 use crate::net::NetManagerRunner;
+use crate::output::{OutputDeviceRc, OutputTextureWriter};
 use crate::util::MuCo;
 
 pub type UIManagerRc = Rc<UIManager>;
@@ -61,7 +63,7 @@ struct EventInfo {
 type WindowId = usize;
 
 impl UIManager {
-    pub fn new(queue: Queue) -> Self {
+    pub fn new(output_device: OutputDeviceRc) -> Self {
         let inner = Inner {
             window_ops_opt: None,
             event_infos_opt: None,
@@ -73,12 +75,13 @@ impl UIManager {
 
         thread::spawn({
             let inner_muco = Arc::clone(&inner_muco);
+            let texture_writer = output_device.get_texture_writer();
 
             move || {
                 // Spawn thread to run slint event loop, so UI rendering is not going to block
                 // the main render thread.
                 
-                let platform = UIPlatform::new(inner_muco, queue);
+                let platform = UIPlatform::new(inner_muco, texture_writer);
                 platform::set_platform(Box::new(platform)).expect("Unable to set platform");
                 slint::run_event_loop().expect("Unable to run event loop");
             }
@@ -203,7 +206,7 @@ impl Drop for UIWindow {
     }
 }
 
-#[allow(clippy::enum_variant_names)]
+#[expect(clippy::enum_variant_names)]
 pub enum UIEvent { // TODO: Instead of (f32...) we can use structs.
     PointerMove(f32, f32),
     PointerPress(f32, f32),
@@ -213,7 +216,7 @@ pub enum UIEvent { // TODO: Instead of (f32...) we can use structs.
 
 struct UIPlatform {
     inner_muco: InnerMuCo,
-    queue: Queue,
+    texture_writer: OutputTextureWriter,
     current_soft_window: RefCell<Option<Rc<MinimalSoftwareWindow>>>,
 }
 
@@ -227,10 +230,10 @@ struct WindowInfo {
 }
 
 impl UIPlatform {
-    fn new(inner_muco: InnerMuCo, queue: Queue) -> Self {
+    fn new(inner_muco: InnerMuCo, texture_writer: OutputTextureWriter) -> Self {
         Self {
             inner_muco,
-            queue,
+            texture_writer,
             current_soft_window: RefCell::new(None),
         }
     }
@@ -385,7 +388,7 @@ impl Platform for UIPlatform {
 
                     let pixel_size = mem::size_of::<Rgba>();
 
-                    self.queue.write_texture( // TODO: Improve write_texture performance, implement buffering scenario?
+                    self.texture_writer.write_texture( // TODO: Improve write_texture performance, implement buffering scenario?
                         TexelCopyTextureInfo {
                             texture: &window_info.texture,
                             mip_level: 0,

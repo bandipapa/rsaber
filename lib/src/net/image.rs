@@ -71,7 +71,7 @@ impl ImageResponse {
     }
 }
 
-#[allow(unused)]
+#[expect(unused)]
 pub enum ImageError {
     Fetch(reqwest_Error),
     Decode(image_Error),

@@ -1,5 +1,7 @@
 // Blinn-Phong shader
 
+#COMMON#
+
 // Input
 
 #UNI#
@@ -10,12 +12,11 @@ struct VertexIn {
     @location(0) pos: vec3<f32>,
     @location(1) normal: vec3<f32>,
     // Per-instance
-    @location(10) color: vec3<f32>,
-    @location(11) phong_param: vec4<f32>,
-    @location(12) model_m0: vec4<f32>,
-    @location(13) model_m1: vec4<f32>,
-    @location(14) model_m2: vec4<f32>,
-    @location(15) model_m3: vec4<f32>,
+    @location(11) color: vec3<f32>,
+    @location(12) phong_param: vec4<f32>,
+    @location(13) model_scale: vec3<f32>,
+    @location(14) model_rot: vec4<f32>,
+    @location(15) model_pos: vec3<f32>,
 }
 
 // Implementation
@@ -29,14 +30,12 @@ struct VertexOut {
 }
 
 @vertex fn vs_main(in: VertexIn) -> VertexOut {
-    let model_m = mat4x4(in.model_m0, in.model_m1, in.model_m2, in.model_m3);
-    let normal_m = mat3x3(normalize(model_m[0].xyz), normalize(model_m[1].xyz), normalize(model_m[2].xyz)); // TODO: this is working for uniform scaling. Or do inverse+transpose?
-    let pos = model_m * vec4(in.pos, 1);
+    let pos = apply_all(in.pos, in.model_scale, in.model_rot, in.model_pos);
 
     var out: VertexOut;
-    out.pos = uni.view_m[#VIEW_INDEX_VAL#] * pos;
-    out.frag_pos = pos.xyz;
-    out.normal = normal_m * in.normal;
+    out.pos = uni.view_m[#VIEW_INDEX_VAL#] * vec4(pos, 1);
+    out.frag_pos = pos;
+    out.normal = apply_rot(normalize(apply_scale(in.normal, 1 / in.model_scale)), in.model_rot);
     out.color = in.color;
     out.phong_param = in.phong_param;
 

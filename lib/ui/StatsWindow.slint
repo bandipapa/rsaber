@@ -11,7 +11,7 @@ export component StatsWindow inherits WindowBase {
     in property<int> frame-time;
     in property<int> draw-calls;
     in property<int> inst-num;
-    in property<int> inst-buf;
+    in property<int> buf-upload;
 
     VerticalLayout {
         Text {
@@ -41,7 +41,7 @@ export component StatsWindow inherits WindowBase {
         }
 
         Text {
-            text: "Instance buf [kB/s]: \{root.fps * root.inst-buf / 1024}";
+            text: "Buffer upload [kB/s]: \{root.fps * root.buf-upload / 1024}";
             color: #ffffff;
         }
     }

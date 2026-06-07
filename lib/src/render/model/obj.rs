@@ -6,22 +6,23 @@
 //   +--> x
 // - Geometry: Normals, Triangulated Mesh, Apply Modifiers
 
-use std::collections::HashMap;
+use hashbrown::HashMap;
 use std::io::{BufRead, BufReader};
 use std::iter;
 
-use wgpu::{BufferUsages, Device};
-use wgpu::util::{BufferInitDescriptor, DeviceExt};
+use wgpu::BufferUsages;
+use wgpu::util::BufferInitDescriptor;
 
 use crate::asset::AssetManagerRc;
-use crate::model::{InstShaderType, Mesh, PrimitiveStateType, Submesh, VertexPosNormal, VertexShaderType};
+use crate::output::OutputDeviceRc;
+use crate::render::model::{InstShaderType, Mesh, Submesh, VertexPosNormal, VertexShaderType, get_default_primitive_state};
 
 type MeshIndex = u32;
 
 pub struct Obj;
 
 impl Obj {
-    pub fn open<S: AsRef<str>>(asset_mgr: AssetManagerRc, device: &Device, name: S, submesh_infos: &[(&str, &InstShaderType)]) -> Mesh { // TODO: convert it to func? Embed parsed objs into binary?
+    pub fn open<S: AsRef<str>>(asset_mgr: AssetManagerRc, output_device: OutputDeviceRc, name: S, submesh_infos: &[(&str, &InstShaderType)]) -> Mesh { // TODO: convert it to func? Embed parsed objs into binary?
         assert!(!submesh_infos.is_empty());
 
         // Parse obj.
@@ -47,7 +48,7 @@ impl Obj {
             let mut finish = || { // TODO: Move to outside of the loop?
                 if let Some(inst_index) = inst_index_opt {
                     let submesh_info: &(&str, &InstShaderType) = &submesh_infos[inst_index]; // TODO: Why do we need type annotation here?
-                    let submesh = Submesh::new(base_index, indexes.len().try_into().unwrap(), base_vertex.try_into().unwrap(), PrimitiveStateType::TriangleList, submesh_info.1.clone());
+                    let submesh = Submesh::new(base_index, indexes.len().try_into().unwrap(), base_vertex.try_into().unwrap(), get_default_primitive_state(), submesh_info.1.clone());
                     submeshes[inst_index] = Some(submesh);
                     inst_index_opt = None;
                 }
@@ -138,13 +139,13 @@ impl Obj {
 
         // Create buffers.
 
-        let vertex_buf = device.create_buffer_init(&BufferInitDescriptor {
+        let vertex_buf = output_device.create_buffer_init(&BufferInitDescriptor {
             label: None,
             contents: bytemuck::cast_slice(&vertexes),
             usage: BufferUsages::VERTEX,
         });
 
-        let index_buf = device.create_buffer_init(&BufferInitDescriptor {
+        let index_buf = output_device.create_buffer_init(&BufferInitDescriptor {
             label: None,
             contents: bytemuck::cast_slice(&indexes),
             usage: BufferUsages::INDEX,

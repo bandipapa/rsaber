@@ -4,9 +4,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
-use cgmath::{Deg, Quaternion, Rotation3, Vector3};
+use cgmath::{Deg, Quaternion, Rotation3, Vector3, Zero};
 
-use crate::model::*;
+use crate::render::model::*;
 use crate::ui::{StatsWindow, UILoop};
 use crate::util::StatsRc;
 
@@ -28,7 +28,7 @@ pub fn create_floor(model_reg: &mut ModelRegistry) {
     let floor_param = FloorParam::new(&COLOR_WHITE);
     let floor = model_reg.create(floor_param);
     floor.set_visible(true);
-    floor.set_pos(&Vector3::new(0.0, 0.0, 0.0));
+    floor.set_pos(&Vector3::zero());
 }
 
 pub fn create_stats_window(model_reg: &mut ModelRegistry, stats: StatsRc, ui_loop: &UILoop) {
@@ -72,7 +72,7 @@ pub fn create_stats_window(model_reg: &mut ModelRegistry, stats: StatsRc, ui_loo
                                 window.set_frame_time(stats_inner.frame_time.try_into().unwrap());
                                 window.set_draw_calls(stats_inner.draw_calls.try_into().unwrap());
                                 window.set_inst_num(stats_inner.inst_num.try_into().unwrap());
-                                window.set_inst_buf(stats_inner.inst_buf.try_into().unwrap());
+                                window.set_buf_upload(stats_inner.buf_upload.try_into().unwrap());
                             },
                             None => alive.store(false, Ordering::Relaxed),
                         }

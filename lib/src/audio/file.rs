@@ -92,7 +92,7 @@ impl AudioFile {
         let decoder_sample_rate = codec_params.sample_rate.unwrap();
 
         let rate_conv_opt = if decoder_sample_rate != sample_rate {
-            let rate_conv = Fft::<f32>::new(decoder_sample_rate as usize, sample_rate as usize, RATE_CONV_CHUNK, 1, channels, FixedSync::Both).expect("Unable to create sample rate converter");
+            let rate_conv = Fft::<f32>::new(decoder_sample_rate as usize, sample_rate as usize, RATE_CONV_CHUNK, channels, FixedSync::Both).expect("Unable to create sample rate converter");
             Some(rate_conv)
         } else {
             None
@@ -354,7 +354,7 @@ impl AudioFileHandle {
         self.inner.state.store(State::Playing, Ordering::Relaxed);
     }
 
-    #[allow(dead_code)] // TODO: remove dead_code once it is used
+    #[expect(dead_code)] // TODO: remove dead_code once it is used
     pub fn pause(&self) {
         self.inner.state.store(State::Paused, Ordering::Relaxed);
     }

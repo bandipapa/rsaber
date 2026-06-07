@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use hashbrown::HashMap;
 use std::io::{Cursor, Read};
 use std::sync::Arc;
 
@@ -99,7 +99,7 @@ impl AssetFileTrait for AssetFile {
     }
 }
 
-#[allow(unused)]
+#[expect(unused)]
 #[derive(Debug)]
 pub enum SongZipError {
     Fetch(reqwest_Error),

@@ -1,20 +1,21 @@
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::ffi::CString;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use ash::vk::Handle;
 use cgmath::{Angle, Deg, Matrix4, Quaternion, Rad, Rotation3, Vector2, Vector3, Zero};
-use wgpu::{Device, DeviceDescriptor, Extent3d, Features, Instance, Queue, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages, TextureView};
+use wgpu::{DeviceDescriptor, Extent3d, Features, Instance, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages, TextureView};
 
 #[cfg(target_os = "android")]
 use android_activity::AndroidApp;
 
 use crate::{APP_NAME, APP_VERSION_MAJOR, APP_VERSION_MINOR, APP_VERSION_PATCH, Main};
 use crate::scene::{SceneInput, ScenePose, ScenePoseScroll};
-use crate::output::{DEPTH_FORMAT, NEAR_Z, FAR_Z, Frame, OutputInfo, ViewMat, create_texture, get_default_features, get_default_limits, get_sample_count};
+use crate::output::{DEPTH_FORMAT, NEAR_Z, FAR_Z, Frame, OutputDevice, OutputDeviceRc, OutputInfo, ViewMat, get_default_features, get_default_limits, get_sample_count};
 
 type OutputViewMat = [ViewMat; 2];
 
@@ -31,18 +32,11 @@ const MY_TO_OPENXR_M: Matrix4<f32> = Matrix4::new( // my -> openxr
 const SCROLL_SPEED: f32 = 1000.0; // [pixels/s]
 
 pub struct XROutput {
-    // wgpu
-    device: Device,
-    queue: Queue,
-    color_format: TextureFormat,
     color_views: Box<[TextureView]>,
-    depth_view: TextureView,
-    sample_count: u32,
-    multisample_view: Option<TextureView>,
     width: u32,
     height: u32,
-    diags: Vec<String>,
     xr_session: openxr::Session<openxr::Vulkan>,
+    output_device: OutputDeviceRc,
     inner: RefCell<Inner>,
     xr_space: openxr::Space,
     xr_action_set: openxr::ActionSet,
@@ -81,7 +75,7 @@ struct Origin {
     rot: Quaternion<f32>,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[expect(clippy::large_enum_variant)]
 enum Begin<'a> {
     NoRender,
     Frame((XRFrame<'a>, Option<XRPose>, Option<XRPose>)),
@@ -92,7 +86,7 @@ struct XRScroll {
     y: openxr::Action<f32>,
 }
 
-#[allow(non_camel_case_types)]
+#[expect(non_camel_case_types)]
 enum XRHardware {
     Generic,
     Oculus_Quest2,
@@ -240,8 +234,7 @@ impl XROutput {
 
         let wgpu_hal_exts: Vec<_> = exts_c.into_iter().map(|s| Box::leak(Box::new(s)).as_c_str()).collect(); // TODO: How to do it without leak?
 
-        #[allow(unused_assignments)]
-        #[allow(unused_mut)]
+        #[expect(unused_mut)]
         let mut android_sdk_version = 0;
         #[cfg(target_os = "android")]
         {
@@ -434,25 +427,11 @@ impl XROutput {
         let color_views = xr_swapchain_imgs.into_iter().map(|texture_raw| {
             let texture_handle = ash::vk::Image::from_raw(texture_raw);
             let texture_hal = unsafe { wgpu_hal_dev.texture_from_raw(texture_handle, &wgpu_color_descr_hal, Some(Box::new(|| {})), wgpu::hal::vulkan::TextureMemory::External) }; // Don't take ownership of the texture. // TODO: use dropguard?
-            let texture = unsafe { device.create_texture_from_hal::<wgpu::hal::vulkan::Api>(texture_hal, &wgpu_color_descr) };
+            let texture = unsafe { device.create_texture_from_hal::<wgpu::hal::vulkan::Api>(texture_hal, &wgpu_color_descr, wgpu::wgt::TextureUses::UNINITIALIZED) };
             texture.create_view(&Default::default())
         }).collect();
 
-        // Setup multisample buffer.
-
         let sample_count = get_sample_count(&wgpu_adapter, color_format);
-
-        let multisample_view = if sample_count > 1 {
-            let texture = create_texture(&device, width, height, 2, sample_count, color_format);
-            Some(texture.create_view(&Default::default()))
-        } else {
-            None
-        };
-
-        // Setup depth buffer.
-
-        let depth_texture = create_texture(&device, width, height, 2, sample_count, DEPTH_FORMAT);
-        let depth_view = depth_texture.create_view(&Default::default());
 
         // Setup input.
 
@@ -585,18 +564,15 @@ impl XROutput {
         let xr_left_space = xr_left_action.create_space(&xr_session, openxr::Path::NULL, openxr::Posef::IDENTITY).expect("OpenXR create_space() failed");
         let xr_right_space = xr_right_action.create_space(&xr_session, openxr::Path::NULL, openxr::Posef::IDENTITY).expect("OpenXR create_space() failed");
 
+        let output_info = OutputInfo::new(color_format, DEPTH_FORMAT, sample_count, 2, diags);
+        let output_device = Rc::new(OutputDevice::new(&device, &queue, output_info));
+
         Self {
-            device,
-            queue,
-            color_format,
             color_views,
-            depth_view,
-            sample_count,
-            multisample_view,
             width,
             height,
-            diags,
             xr_session,
+            output_device,
             inner: RefCell::new(Inner {
                 state: State::Stopped,
                 event_buf: openxr::EventDataBuffer::new(),
@@ -620,8 +596,16 @@ impl XROutput {
         }
     }
 
-    pub fn get_info(&self) -> OutputInfo { // TODO: prepare it it new and don't create new instance everytime?
-        OutputInfo::new(&self.device, &self.queue, self.color_format, DEPTH_FORMAT, self.sample_count, 2, "@builtin(view_index) view_index: u32,", "in.view_index", &self.diags)
+    pub fn get_width(&self) -> u32 {
+        self.width
+    }
+
+    pub fn get_height(&self) -> u32 {
+        self.height
+    }
+
+    pub fn get_output_device(&self) -> OutputDeviceRc {
+        Rc::clone(&self.output_device)
     }
 
     pub fn poll(&self, main: &Main) -> bool {
@@ -816,7 +800,7 @@ impl XROutput {
         let pose_l_opt = self.calc_pose(focused, origin, &left_location, click_l, scroll_l, &self.xr_left_haptic);
         let pose_r_opt = self.calc_pose(focused, origin, &right_location, click_r, scroll_r, &self.xr_right_haptic);
         
-        let frame = XRFrame::new(xr_swapchain, xr_stream, &self.xr_space, self.width, self.height, display_t, views, color_view, self.multisample_view.clone(), self.depth_view.clone(), view_m, cam_pos);
+        let frame = XRFrame::new(xr_swapchain, xr_stream, &self.xr_space, self.width, self.height, display_t, views, color_view, view_m, cam_pos);
         Begin::Frame((frame, pose_l_opt, pose_r_opt))
     }
 
@@ -920,15 +904,13 @@ struct XRFrame<'a> {
     display_t: openxr::Time,
     views: Vec<openxr::View>,
     color_view: TextureView,
-    multisample_view: Option<TextureView>,
-    depth_view: TextureView,
     view_m: OutputViewMat,
     cam_pos: Vector3<f32>,
 }
 
 impl<'a> XRFrame<'a> {
-    #[allow(clippy::too_many_arguments)]
-    fn new(xr_swapchain: &'a mut openxr::Swapchain<openxr::Vulkan>, xr_stream: &'a mut openxr::FrameStream<openxr::Vulkan>, xr_space: &'a openxr::Space, width: u32, height: u32, display_t: openxr::Time, views: Vec<openxr::View>, color_view: TextureView, multisample_view: Option<TextureView>, depth_view: TextureView, view_m: OutputViewMat, cam_pos: Vector3<f32>) -> Self {
+    #[expect(clippy::too_many_arguments)]
+    fn new(xr_swapchain: &'a mut openxr::Swapchain<openxr::Vulkan>, xr_stream: &'a mut openxr::FrameStream<openxr::Vulkan>, xr_space: &'a openxr::Space, width: u32, height: u32, display_t: openxr::Time, views: Vec<openxr::View>, color_view: TextureView, view_m: OutputViewMat, cam_pos: Vector3<f32>) -> Self {
         Self {
             xr_swapchain,
             xr_stream,
@@ -938,8 +920,6 @@ impl<'a> XRFrame<'a> {
             display_t,
             views,
             color_view,
-            multisample_view,
-            depth_view,
             view_m,
             cam_pos,
         }
@@ -947,26 +927,16 @@ impl<'a> XRFrame<'a> {
 }
 
 impl<'a> Frame for XRFrame<'a> {
-    type OutputViewMat = OutputViewMat;
-
     fn get_color_view(&self) -> &TextureView {
         &self.color_view
     }
 
-    fn get_multisample_view(&self) -> Option<&TextureView> {
-        self.multisample_view.as_ref()
+    fn get_cam_pos(&self) -> &Vector3<f32> {
+        &self.cam_pos
     }
 
-    fn get_depth_view(&self) -> &TextureView {
-        &self.depth_view
-    }
-
-    fn get_cam_pos(&self) -> Vector3<f32> {
-        self.cam_pos
-    }
-
-    fn get_view_m(&self) -> Self::OutputViewMat {
-        self.view_m
+    fn get_view_m(&self) -> &[u8] {
+        bytemuck::cast_slice(&self.view_m)
     }
 
     fn end(self) {

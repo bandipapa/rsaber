@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
 
 #[cfg(feature = "test")]
 use std::time::Instant;
@@ -8,20 +9,24 @@ use cgmath::{Angle, Deg, InnerSpace, Matrix4, Quaternion, Rotation3, Vector3};
 
 use crate::asset::AssetManagerRc;
 use crate::audio::{AudioEngineRc, AudioFile, AudioFileHandle, AudioTimestamp};
-use crate::model::*;
 use crate::net::NetManager;
-use crate::output::OutputInfoRc;
+use crate::output::OutputDeviceRc;
+use crate::render::{RenderGraph, RenderGraphBuilder, RenderNodeInOut};
+use crate::render::model::*;
 use crate::scene::{MenuParam, Scene, SceneFactory, SceneInput, SceneManager, ScenePose, create_floor, create_saber, create_stats_window};
-use crate::songinfo::{BPMInfo, NoteCutDir, NoteType, SongInfo};
-use crate::ui::{GameStatsWindow, UILoop};
+use crate::songinfo::{NoteCutDir, NoteType, SongInfo};
+use crate::ui::{GameStatsWindow, UILoop, UIManagerRc};
 use crate::ui::slintimpl;
 use crate::util::StatsRc;
 
-const CUBE_SIZE: f32 = 0.5; // [m]
-const CUBE_SPACING: f32 = 0.10; // [m]
+const CELL_SIZE: f32 = 0.5; // [m]
+const CELL_SPACING: f32 = 0.10; // [m]
 const CUBE_FLOOR: f32 = 0.6; // [m]
+const OBSTACLE_FLOOR: f32 = 0.3; // [m]
 
-const OFFSET_Y: f32 = CUBE_SIZE / 2.0 + 1.0; // When ts == cube_info.ts, then distance between the player and center of the cube [m]
+const OFFSET_Y: f32 = 1.0; // When ts == obj.ts, then distance between the player and the front side of the object [m]
+
+const OUTLINE_WIDTH: f32 = 0.05;
 
 // TODO: These are depending on songinfo + environmental geometry:
 const ZONE_IN1_DIST: f32 = 100.0; // [m]
@@ -56,8 +61,8 @@ impl SceneFactory for GameParam {
     type Scene = Game;
     type Error = String;
 
-    fn load(self, _asset_mgr: AssetManagerRc, model_reg: &mut ModelRegistry, _output_info: OutputInfoRc, stats: StatsRc, audio_engine: AudioEngineRc, ui_loop: &UILoop, _net_manager: &NetManager) -> Result<Self::Scene, Self::Error> {
-        Game::new(self, model_reg, stats, audio_engine, ui_loop)
+    fn load(self, asset_mgr: AssetManagerRc, output_device: OutputDeviceRc, stats: StatsRc, audio_engine: AudioEngineRc, ui_manager: UIManagerRc, _net_manager: &NetManager) -> Result<Self::Scene, Self::Error> {
+        Game::new(self, asset_mgr, output_device, stats, audio_engine, ui_manager)
     }
 }
 
@@ -65,9 +70,11 @@ pub struct Game {
     ui_loop: UILoop,
     zone_info: Rc<ZoneInfo>,
     cube_infos: Box<[Rc<CubeInfo>]>,
+    obstacle_infos: Box<[Rc<ObstacleInfo>]>,
     game_stats_window_weak: slintimpl::Weak<GameStatsWindow>,
     saber_l: Rc<Saber>,
     saber_r: Rc<Saber>,
+    rg: RenderGraph,
     audio_info_opt: Option<AudioInfo>,
     inner: RefCell<Inner>,
 }
@@ -84,6 +91,44 @@ struct ZoneInfo {
     out_t: f32,
 }
 
+enum ZoneInfoState {
+    In1,
+    In2(f32),
+    In3,
+    Out,
+}
+
+impl ZoneInfo {
+    #[expect(clippy::too_many_arguments)]
+    fn new(in1_dist: f32, in2_dist: f32, in3_dist: f32, in3_v: f32, in3_t: f32, in23_t: f32, in123_t: f32, out_v: f32, out_t: f32) -> Self {
+        Self {
+            in1_dist,
+            in2_dist,
+            in3_dist,
+            in3_v,
+            in3_t,
+            in23_t,
+            in123_t,
+            out_v,
+            out_t,
+        }
+    }
+
+    fn calc<F: FnOnce(ZoneInfoState) -> R, R>(&self, ts: f32, func: F) -> (f32, R) {
+        if ts <= 0.0 {
+            (ts * self.out_v, func(ZoneInfoState::Out))
+        } else if ts <= self.in3_t {
+            (ts * self.in3_v, func(ZoneInfoState::In3))
+        } else if ts <= self.in23_t {
+            let factor = (self.in23_t - ts) / (self.in23_t - self.in3_t);
+            (self.in2_dist * (1.0 - factor) + self.in3_dist, func(ZoneInfoState::In2(factor)))
+        } else {
+            let factor = (self.in123_t - ts) / (self.in123_t - self.in23_t);
+            (self.in1_dist * (1.0 - factor) + self.in2_dist + self.in3_dist, func(ZoneInfoState::In1))
+        }
+    }
+}
+
 struct CubeInfo {
     ts: f32,
     x: f32,
@@ -92,6 +137,16 @@ struct CubeInfo {
     angle: f32,
     any: bool,
     cube: Rc<Cube>,
+}
+
+struct ObstacleInfo {
+    ts_start: f32,
+    ts_end: f32,
+    x: f32,
+    z: f32,
+    scale_x: f32,
+    scale_z: f32,
+    outlinebox: Rc<OutlineBox>,
 }
 
 struct AudioInfo {
@@ -105,6 +160,7 @@ struct Inner {
     start_time: Instant,
     alive_objs: AliveObjs,
     cube_range_end: usize,
+    obstacle_range_end: usize,
     prev_audio_ts: f32,
     prev_click: bool,
     game_stats: GameStats,
@@ -124,14 +180,19 @@ enum UpdateResult {
 }
 
 impl Game {
-    fn new(param: GameParam, model_reg: &mut ModelRegistry, stats: StatsRc, audio_engine: AudioEngineRc, ui_loop: &UILoop) -> Result<Self, String> {
-        let song_info = param.song_info;
+    fn new(param: GameParam, asset_mgr: AssetManagerRc, output_device: OutputDeviceRc, stats: StatsRc, audio_engine: AudioEngineRc, ui_manager: UIManagerRc) -> Result<Self, String> {
+        // Prepare.
+
+        let mut model_reg = ModelRegistry::new(Arc::clone(&asset_mgr), Rc::clone(&output_device), Rc::clone(&ui_manager));
+        let ui_loop = ui_manager.get_ui_loop();
 
         // Determine color scheme.
 
+        let song_info = param.song_info;
+
         let beatmap_info = &song_info.get_beatmap_infos()[param.beatmap_info_index];
 
-        let color_scheme = if let Some(color_scheme_index) = beatmap_info.get_color_scheme_index_opt() && let Some(color_scheme) = song_info.get_color_scheme(color_scheme_index) {
+        let color_scheme = if let Some(color_scheme_index) = beatmap_info.get_color_scheme_index_opt() && let Some(color_scheme) = song_info.get_color_scheme(color_scheme_index) { // TODO: provide strict mode
             color_scheme
         } else {
             beatmap_info.get_def_color_scheme()
@@ -141,7 +202,7 @@ impl Game {
         let color_r = color_scheme.get_color_r();
 
         // Calculate zone info.
-        
+
         let notejump_speed = beatmap_info.get_notejump_speed();
 
         let in1_dist = ZONE_IN1_DIST;
@@ -163,7 +224,7 @@ impl Game {
         let out_v = notejump_speed;
         let out_t = out_dist / out_v;
 
-        let zone_info = Rc::new(ZoneInfo {
+        let zone_info = Rc::new(ZoneInfo::new(
             in1_dist,
             in2_dist,
             in3_dist,
@@ -173,7 +234,7 @@ impl Game {
             in123_t,
             out_v,
             out_t,
-        });
+        ));
 
         // Setup cubes.
 
@@ -183,19 +244,11 @@ impl Game {
         let symbol_phong_param = PhongParam::new(0.5, 0.3, 0.6, 16.0);
 
         let beatmap = beatmap_info.load().map_err(|e| format!("Unable to load beatmap: {:?}", e))?; // TODO: instead of debug, use display trait for formatting error msg?
+
         let cube_infos = Box::from_iter(beatmap.get_notes().iter().filter_map(|note| {
             let bpm_pos = note.get_bpm_pos();
 
-            let ts_opt = match &bpm_info {
-                BPMInfo::Fixed(bpm) => {
-                    Some(60.0 / bpm * bpm_pos)
-                },
-                BPMInfo::Mapped(bpm_map) => {
-                    bpm_map.get_ts(bpm_pos)
-                },
-            };
-
-            if let Some(ts) = ts_opt {
+            if let Some(ts) = bpm_info.get_ts(bpm_pos) {
                 let note_type = note.get_note_type();
                 let mut any = false;
                 let mut symbol = CubeSymbol::Arrow;
@@ -226,18 +279,11 @@ impl Game {
 
                 let cube_param = CubeParam::new(symbol, color, &body_phong_param, &COLOR_WHITE, &symbol_phong_param);
                 let cube = model_reg.create(cube_param);
-                cube.set_scale(CUBE_SIZE);
+                cube.set_scale(CELL_SIZE);
 
-                // Notes regarding the cube:
-                // - Its bounding box is unit (1m) sized and the object center is at the origin.
-                // - It is scaled to CUBE_SIZE.
+                // Cube bounding box is unit (1m) sized and the object center is at the origin.
 
-                let x_val = note.get_x() as f32;
-                let (x_index, right) = if x_val >= 2.0 { (x_val - 2.0, 1.0) } else { (1.0 - x_val, -1.0) };
-                let x = right * (CUBE_SPACING / 2.0 + x_index * (CUBE_SIZE + CUBE_SPACING) + CUBE_SIZE / 2.0);
-
-                let y_val = note.get_y() as f32;
-                let z = y_val * (CUBE_SIZE + CUBE_SPACING) + CUBE_SIZE / 2.0;
+                let (x, z) = Self::calc_xz(note.get_x(), note.get_y());
 
                 let cube_info = Rc::new(CubeInfo {
                     ts,
@@ -250,6 +296,42 @@ impl Game {
                 });
 
                 Some(cube_info)
+            } else {
+                None
+            }
+        }));
+
+        let obstacle_infos = Box::from_iter(beatmap.get_obstacles().iter().filter_map(|obstacle| {
+            let bpm_pos = obstacle.get_bpm_pos();
+            let duration = obstacle.get_duration();
+
+            if let Some(ts_start) = bpm_info.get_ts(bpm_pos) &&
+               let Some(ts_end) = bpm_info.get_ts(bpm_pos + duration) {
+                // Obstacle bounding box is unit (1m) sized and the object center is at the origin.
+
+                let (start_x, start_z) = Self::calc_xz(obstacle.get_x(), obstacle.get_y());
+                let (end_x, end_z) = Self::calc_xz(obstacle.get_x() + obstacle.get_width() - 1, obstacle.get_y() + obstacle.get_height() - 1);
+
+                let x = (end_x + start_x) / 2.0;
+                let z = (end_z + start_z) / 2.0 + OBSTACLE_FLOOR;
+
+                let scale_x = end_x - start_x + CELL_SIZE;
+                let scale_z = end_z - start_z + CELL_SIZE;
+
+                let outlinebox_param = OutlineBoxParam::new(color_scheme.get_obstacle(), OUTLINE_WIDTH);
+                let outlinebox = model_reg.create(outlinebox_param);
+
+                let obstacle_info = Rc::new(ObstacleInfo {
+                    ts_start,
+                    ts_end,
+                    x,
+                    z,
+                    scale_x,
+                    scale_z,
+                    outlinebox,
+                });
+
+                Some(obstacle_info)
             } else {
                 None
             }
@@ -271,17 +353,26 @@ impl Game {
 
         // Setup floor.
 
-        create_floor(model_reg);
-        create_stats_window(model_reg, stats, ui_loop);
+        create_floor(&mut model_reg);
+        create_stats_window(&mut model_reg, Arc::clone(&stats), ui_loop);
 
         // Setup sabers.
 
-        let (saber_l, saber_r) = create_saber(model_reg, color_l, color_r);
+        let (saber_l, saber_r) = create_saber(&mut model_reg, color_l, color_r);
+
+        // Setup render graph.
+
+        let rgb = RenderGraphBuilder::new(asset_mgr, output_device, stats);
+
+        let model_renderer: Rc<ModelRenderer> = rgb
+            .create_node()
+            .build_with_param(model_reg);
+
+        let rg = rgb.build(model_renderer.get_out("out_color"));
 
         // Setup audio.
 
-        #[allow(unused_assignments)]
-        #[allow(unused_mut)]
+        #[expect(unused_mut)]
         let mut test = false;
         #[cfg(feature = "test")]
         {
@@ -310,6 +401,7 @@ impl Game {
             start_time: Instant::now(),
             alive_objs: Vec::new(),
             cube_range_end: 0,
+            obstacle_range_end: 0,
             prev_audio_ts: 0.0, // TODO: is this correct to default it to 0?
             prev_click: true,
             game_stats: GameStats::new(cube_infos.len().try_into().unwrap()),
@@ -319,9 +411,11 @@ impl Game {
             ui_loop: ui_loop.clone(),
             zone_info,
             cube_infos,
+            obstacle_infos,
             game_stats_window_weak,
             saber_l,
             saber_r,
+            rg,
             audio_info_opt,
             inner: RefCell::new(inner),
         })
@@ -330,14 +424,19 @@ impl Game {
     fn update_objs(&self, inner: &mut Inner, audio_ts: f32, scene_input: &SceneInput) {
         let alive_objs = &mut inner.alive_objs;
 
-        // Show incoming cubes.
+        // Spawn incoming objects.
 
         let zone_info = &self.zone_info;
+        let ts_in = audio_ts + zone_info.in123_t;
+
         let cube_infos = &self.cube_infos;
         let cube_range_end = &mut inner.cube_range_end;
 
+        let obstacle_infos = &self.obstacle_infos;
+        let obstacle_range_end = &mut inner.obstacle_range_end;
+
         if self.audio_info_opt.is_some() {
-            let ts_in = audio_ts + zone_info.in123_t;
+            // Handle cubes.
 
             for i in *cube_range_end..cube_infos.len() {
                 let cube_info = &cube_infos[i];
@@ -347,6 +446,21 @@ impl Game {
                     alive_objs.push(Box::new(obj));
 
                     *cube_range_end = i + 1;
+                } else {
+                    break;
+                }
+            }
+
+            // Handle obstacles.
+
+            for i in *obstacle_range_end..obstacle_infos.len() {
+                let obstacle_info = &obstacle_infos[i];
+
+                if obstacle_info.ts_start <= ts_in {
+                    let obj = ObstacleObj::new(Rc::clone(zone_info), Rc::clone(obstacle_info));
+                    alive_objs.push(Box::new(obj));
+
+                    *obstacle_range_end = i + 1;
                 } else {
                     break;
                 }
@@ -418,6 +532,19 @@ impl Game {
             saber.set_visible(SaberVisibility::Hidden);
         }
     }
+
+    fn calc_xz(x_val: u8, y_val: u8) -> (f32, f32) {
+        // Calculate center.
+
+        let x_val = x_val as f32;
+        let (x_index, right) = if x_val >= 2.0 { (x_val - 2.0, 1.0) } else { (1.0 - x_val, -1.0) };
+        let x = right * (CELL_SPACING / 2.0 + x_index * (CELL_SIZE + CELL_SPACING) + CELL_SIZE / 2.0);
+
+        let y_val = y_val as f32;
+        let z = y_val * (CELL_SIZE + CELL_SPACING) + CELL_SIZE / 2.0;
+
+        (x, z)
+    }
 }
 
 impl Scene for Game {
@@ -488,6 +615,10 @@ impl Scene for Game {
             scene_mgr.load(MenuParam::new()).expect("Unable to load scene");
         }
     }
+
+    fn get_rg(&self) -> &RenderGraph {
+        &self.rg
+    }
 }
 
 struct CubeObj {
@@ -524,15 +655,15 @@ impl CubeObj {
         let saber_len = SABER_DIR.magnitude();
 
         let d = cube_pos - pose.get_pos();
-        if d.magnitude() > saber_len + 3.0_f32.sqrt() * (CUBE_SIZE / 2.0) { // TODO: precalculate sqrt(3)?
+        if d.magnitude() > saber_len + 3.0_f32.sqrt() * (CELL_SIZE / 2.0) { // TODO: precalculate sqrt(3)?
             return None;
         }
 
         // Define hitbox. If changed, then short circuit (see above) needs to be adjusted as well.
 
-        let x_range = -(CUBE_SIZE / 2.0)..=(CUBE_SIZE / 2.0);
-        let y_range = -(CUBE_SIZE / 2.0)..=(CUBE_SIZE / 2.0);
-        let z_range = -(CUBE_SIZE / 2.0)..=(CUBE_SIZE / 2.0);
+        let x_range = -(CELL_SIZE / 2.0)..=(CELL_SIZE / 2.0);
+        let y_range = -(CELL_SIZE / 2.0)..=(CELL_SIZE / 2.0);
+        let z_range = -(CELL_SIZE / 2.0)..=(CELL_SIZE / 2.0);
 
         // Calculate the shortest length of saber which just intersects the cube.
         // TODO: faster implementation?
@@ -593,7 +724,7 @@ impl CubeObj {
                 }
             },
             SlicedStatus::WaitForBelow(len, z) => {
-                if z - calc_z(len) >= CUBE_SIZE / 4.0 {
+                if z - calc_z(len) >= CELL_SIZE / 4.0 {
                     new_sliced_status = SlicedStatus::AtBelow;
                 }
             },
@@ -613,8 +744,7 @@ impl CubeObj {
 
 impl Obj for CubeObj {
     fn update(&mut self, audio_ts: f32, _ts_diff: f32, scene_input: &SceneInput, game_stats: &mut GameStats) -> UpdateResult {
-        #[allow(unused_assignments)]
-        #[allow(unused_mut)]
+        #[expect(unused_mut)]
         let mut test = false;
         #[cfg(feature = "test")]
         {
@@ -641,19 +771,16 @@ impl Obj for CubeObj {
 
         let ts = if !test { cube_info.ts - audio_ts } else { 0.0 };
 
-        let (y, z_base, angle) = if ts <= 0.0 {
-            (ts * zone_info.out_v, CUBE_FLOOR, cube_info.angle)
-        } else if ts <= zone_info.in3_t {
-            (ts * zone_info.in3_v, CUBE_FLOOR, cube_info.angle)
-        } else if ts <= zone_info.in23_t {
-            let factor = (zone_info.in23_t - ts) / (zone_info.in23_t - zone_info.in3_t);
-            (zone_info.in2_dist * (1.0 - factor) + zone_info.in3_dist, CUBE_FLOOR * Deg(90.0 * factor).sin(), cube_info.angle * factor)
-        } else {
-            let factor = (zone_info.in123_t - ts) / (zone_info.in123_t - zone_info.in23_t);
-            (zone_info.in1_dist * (1.0 - factor) + zone_info.in2_dist + zone_info.in3_dist, 0.0, 0.0)
-        };
+        let (y, (z_base, angle)) = zone_info.calc(ts, |state| {
+            match state {
+                ZoneInfoState::In1 => (0.0, 0.0),
+                ZoneInfoState::In2(factor) => (CUBE_FLOOR * Deg(90.0 * factor).sin(), cube_info.angle * factor),
+                ZoneInfoState::In3 => (CUBE_FLOOR, cube_info.angle),
+                ZoneInfoState::Out => (CUBE_FLOOR, cube_info.angle),
+            }
+        });
 
-        let pos = Vector3::new(cube_info.x, y + OFFSET_Y, cube_info.z + z_base); // TODO: ts_in/ts_out should be offseted because of OFFSET_Y.
+        let pos = Vector3::new(cube_info.x, y + CELL_SIZE / 2.0 + OFFSET_Y, cube_info.z + z_base); // TODO: ts_in/ts_out should be offseted because of OFFSET_Y.
         cube_info.cube.set_pos(&pos);
 
         let rot = Quaternion::from_angle_y(Deg(angle));
@@ -668,7 +795,7 @@ impl Obj for CubeObj {
 
         // Do hit detection.
 
-        if let Some(pose) = pose_opt && let Some(len) = self.test_touch(&pos, &rot, pose) {
+        if let Some(pose) = pose_opt && pose.get_render() && let Some(len) = self.test_touch(&pos, &rot, pose) {
             let mut sliced = false;
 
             if cube_info.any {
@@ -751,7 +878,7 @@ impl Obj for SlicedObj {
         self.v.z -= G * ts_diff;
         self.pos += self.v * ts_diff;
 
-        let visible = self.pos.z > -CUBE_SIZE; // Should be enough.
+        let visible = self.pos.z > -CELL_SIZE; // Should be enough.
         let rot = Quaternion::from_angle_y(Deg(cube_info.angle)) * Quaternion::from_axis_angle(self.rot_axis, Deg(self.rot_angle) * self.ts_diff_acc); // TODO: Calculate rot from previous rot + delta (like self.pos)?
 
         if !self.right {
@@ -762,7 +889,6 @@ impl Obj for SlicedObj {
                 cube_info.cube.set_visible_l(false);
             }
         } else {
-            #[allow(clippy::collapsible_else_if)]
             if visible {
                 cube_info.cube.set_pos_r(&self.pos);
                 cube_info.cube.set_rot_r(&rot);
@@ -776,6 +902,53 @@ impl Obj for SlicedObj {
         } else {
             UpdateResult::Remove
         }
+    }
+}
+
+struct ObstacleObj {
+    zone_info: Rc<ZoneInfo>,
+    obstacle_info: Rc<ObstacleInfo>,
+}
+
+impl ObstacleObj {
+    fn new(zone_info: Rc<ZoneInfo>, obstacle_info: Rc<ObstacleInfo>) -> Self {
+        obstacle_info.outlinebox.set_visible(true);
+
+        Self {
+            zone_info,
+            obstacle_info,
+        }
+    }
+}
+
+impl Obj for ObstacleObj {
+    fn update(&mut self, audio_ts: f32, _ts_diff: f32, _scene_input: &SceneInput, _game_stats: &mut GameStats) -> UpdateResult {
+        let zone_info = &self.zone_info;
+        let obstacle_info = &self.obstacle_info;
+
+        // Hide outgoing obstacle.
+
+        let ts_out = audio_ts - zone_info.out_t;
+
+        if obstacle_info.ts_end < ts_out {
+            obstacle_info.outlinebox.set_visible(false);
+            return UpdateResult::Remove;
+        }
+
+        // Update position & scale. Scale needs to be updated as well,
+        // since the obstacle front and back can have different speeds
+        // depending on their position.
+
+        let (start_y, _) = zone_info.calc(obstacle_info.ts_start - audio_ts, |_| {});
+        let (end_y, _) = zone_info.calc(obstacle_info.ts_end - audio_ts, |_| {});
+
+        let scale_y = end_y - start_y;
+        let y = (end_y + start_y) / 2.0 + OFFSET_Y;
+
+        obstacle_info.outlinebox.set_scale(obstacle_info.scale_x, scale_y, obstacle_info.scale_z);
+        obstacle_info.outlinebox.set_pos(&Vector3::new(obstacle_info.x, y, obstacle_info.z));
+        
+        UpdateResult::Keep
     }
 }
 

@@ -61,7 +61,10 @@ fn test_map() {
         let filename = entry.file_name();
         let dir = filename.to_str().unwrap();
 
-        println!("parse {}", dir);
+        #[expect(clippy::print_stdout)]
+        {
+            println!("parse {}", dir);
+        }
 
         let asset_mgr: AssetManagerRc = Arc::new(AssetManager::new(dir));
 

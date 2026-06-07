@@ -1,9 +1,10 @@
 use std::cell::RefCell;
+use std::rc::Rc;
 
 use cgmath::{Angle, Deg, InnerSpace, Matrix, Matrix3, Matrix4, Point3, Rad, Vector3};
-use wgpu::{CompositeAlphaMode, CurrentSurfaceTexture, Device, DeviceDescriptor, Instance, InstanceDescriptor, PresentMode, Queue, RequestAdapterOptions, Surface, SurfaceConfiguration, SurfaceTarget, SurfaceTexture, TextureFormat, TextureUsages, TextureView};
+use wgpu::{CompositeAlphaMode, CurrentSurfaceTexture, Device, DeviceDescriptor, Instance, InstanceDescriptor, PresentMode, Queue, RequestAdapterOptions, Surface, SurfaceColorSpace, SurfaceConfiguration, SurfaceTarget, SurfaceTexture, TextureUsages, TextureView};
 
-use crate::output::{DEPTH_FORMAT, NEAR_Z, FAR_Z, Frame, OutputInfo, ViewMat, create_texture, get_default_features, get_default_limits, get_sample_count};
+use crate::output::{DEPTH_FORMAT, FAR_Z, Frame, NEAR_Z, OutputDevice, OutputDeviceRc, OutputInfo, ViewMat, get_default_features, get_default_limits, get_sample_count};
 
 type OutputViewMat = ViewMat;
 
@@ -13,28 +14,26 @@ pub struct WindowOutput {
     device: Device,
     queue: Queue,
     surface: Surface<'static>,
-    color_format: TextureFormat,
-    sample_count: u32,
-    diags: Vec<String>,
+    output_device: OutputDeviceRc,
     inner: RefCell<Inner>,
 }
 
-struct Inner {
+struct Inner { // TODO: We have only a single field, keep struct?
     surface_config: SurfaceConfiguration,
-    view_obj: Option<(Option<TextureView>, TextureView)>,
 }
 
 impl WindowOutput {
     // Do not include any winit dependency into WindowOutput.
 
-    pub async fn new(instance_descr: InstanceDescriptor, surface_target: SurfaceTarget<'static>) -> Self {
-        let instance = Instance::new(instance_descr);
+    pub async fn new(instance_desc: InstanceDescriptor, surface_target: SurfaceTarget<'static>) -> Self {
+        let instance = Instance::new(instance_desc);
         let surface = instance.create_surface(surface_target).expect("Unable to create render surface");
 
         let adapter_opt = RequestAdapterOptions {
             power_preference: Default::default(),
             force_fallback_adapter: false,
             compatible_surface: Some(&surface),
+            apply_limit_buckets: false,
         };
         let adapter = instance.request_adapter(&adapter_opt).await.expect("Unable to request adapter");
 
@@ -62,6 +61,7 @@ impl WindowOutput {
         let surface_config = SurfaceConfiguration {
             usage: TextureUsages::RENDER_ATTACHMENT,
             format: color_format,
+            color_space: SurfaceColorSpace::Auto,
             width: 0,
             height: 0,
             present_mode: PresentMode::Fifo,
@@ -70,61 +70,39 @@ impl WindowOutput {
             view_formats: vec![],
         };
 
+        let output_info = OutputInfo::new(color_format, DEPTH_FORMAT, sample_count, 1, diags);
+        let output_device = Rc::new(OutputDevice::new(&device, &queue, output_info));
+
         Self {
             device,
             queue,
             surface,
-            color_format,
-            sample_count,
-            diags,
+            output_device,
             inner: RefCell::new(Inner {
                 surface_config,
-                view_obj: None,
             })
         }
     }
 
-    pub fn get_info(&self) -> OutputInfo { // TODO: prepare it it new and don't create new instance everytime?
-        OutputInfo::new(&self.device, &self.queue, self.color_format, DEPTH_FORMAT, self.sample_count, 1, "", "0", &self.diags)
+    pub fn get_output_device(&self) -> OutputDeviceRc {
+        Rc::clone(&self.output_device)
     }
 
     pub fn resize(&self, width: u32, height: u32) {
-        if width == 0 || height == 0 { // TODO: how to handle zero size?
-            return;
-        }
-        
-        let mut inner = self.inner.borrow_mut();
+        assert!(width > 0 && height > 0);
 
         // Setup surface.
 
+        let mut inner = self.inner.borrow_mut();
+
         inner.surface_config.width = width;
         inner.surface_config.height = height;
+
         self.surface.configure(&self.device, &inner.surface_config);
-
-        // Setup multisample buffer.
-
-        let multisample_view = if self.sample_count > 1 {
-            let texture = create_texture(&self.device, width, height, 1, self.sample_count, self.color_format);
-            Some(texture.create_view(&Default::default()))
-        } else {
-            None
-        };
-
-        // Setup depth buffer.
-
-        let depth_texture = create_texture(&self.device, width, height, 1, self.sample_count, DEPTH_FORMAT);
-        let depth_view = depth_texture.create_view(&Default::default());
-
-        inner.view_obj = Some((multisample_view, depth_view));
     }
 
     pub fn begin(&self, cam_pos: &Vector3<f32>, cam_dir: &Vector3<f32>) -> WindowBegin {
         let inner = self.inner.borrow();
-
-        let (multisample_view, depth_view) = match &inner.view_obj {
-            Some(view_obj) => view_obj.clone(),
-            None => return WindowBegin::Skip,
-        };
         
         let surface_texture = match self.surface.get_current_texture() {
             CurrentSurfaceTexture::Success(surface_texture) => surface_texture,
@@ -146,12 +124,12 @@ impl WindowOutput {
 
         let inv_cam_m = Matrix3::from_cols(cam_m.x.truncate(),cam_m.y.truncate(),cam_m.z.truncate()).transpose();
         
-        let frame = WindowFrame::new(surface_texture, multisample_view, depth_view, view_m.into(), *cam_pos, inv_cam_m, aspect);
+        let frame = WindowFrame::new(&self.queue, surface_texture, view_m.into(), *cam_pos, inv_cam_m, aspect);
         WindowBegin::Frame(frame)
     }
 }
 
-#[allow(clippy::large_enum_variant)]
+#[expect(clippy::large_enum_variant)]
 pub enum WindowBegin {
     Skip,
     ResizeNeeded,
@@ -159,10 +137,9 @@ pub enum WindowBegin {
 }
 
 pub struct WindowFrame {
+    queue: Queue,
     surface_texture: SurfaceTexture,
     color_view: TextureView,
-    multisample_view: Option<TextureView>,
-    depth_view: TextureView,
     view_m: OutputViewMat,
     cam_pos: Vector3<f32>,
     inv_cam_m: Matrix3<f32>,
@@ -170,14 +147,13 @@ pub struct WindowFrame {
 }
 
 impl WindowFrame {
-    fn new(surface_texture: SurfaceTexture, multisample_view: Option<TextureView>, depth_view: TextureView, view_m: OutputViewMat, cam_pos: Vector3<f32>, inv_cam_m: Matrix3<f32>, aspect: f32) -> Self {
+    fn new(queue: &Queue, surface_texture: SurfaceTexture, view_m: OutputViewMat, cam_pos: Vector3<f32>, inv_cam_m: Matrix3<f32>, aspect: f32) -> Self {
         let color_view = surface_texture.texture.create_view(&Default::default());
 
         Self {
+            queue: queue.clone(),
             surface_texture,
             color_view,
-            multisample_view,
-            depth_view,
             view_m,
             cam_pos,
             inv_cam_m,
@@ -198,30 +174,20 @@ impl WindowFrame {
 }
 
 impl Frame for WindowFrame {
-    type OutputViewMat = OutputViewMat;
-
     fn get_color_view(&self) -> &TextureView {
         &self.color_view
     }
 
-    fn get_multisample_view(&self) -> Option<&TextureView> {
-        self.multisample_view.as_ref()
+    fn get_cam_pos(&self) -> &Vector3<f32> {
+        &self.cam_pos
     }
 
-    fn get_depth_view(&self) -> &TextureView {
-        &self.depth_view
-    }
-
-    fn get_cam_pos(&self) -> Vector3<f32> {
-        self.cam_pos
-    }
-
-    fn get_view_m(&self) -> Self::OutputViewMat {
-        self.view_m
+    fn get_view_m(&self) -> &[u8] {
+        bytemuck::cast_slice(&self.view_m)
     }
 
     fn end(self) {
-        self.surface_texture.present();
+        self.queue.present(self.surface_texture);
     }
 }
 
