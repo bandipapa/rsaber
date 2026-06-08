@@ -65,18 +65,14 @@ jobs:
       run: |
         cd pc
         cargo build --release
-        ls -l
-        ls -l target
-        cp ${{ format('target/release/rsaber_pc{0}', matrix.build_suffix) }} ${{ format('../output/rsaber_pc{0}', matrix.artifact_suffix) }}
+        cp ${{ format('../target/release/rsaber_pc{0}', matrix.build_suffix) }} ${{ format('../output/rsaber_pc{0}', matrix.artifact_suffix) }}
 
     - name: Build pcvr
       if: matrix.target == 'pcvr'
       run: |
         cd pcvr
         cargo build --release
-        ls -l
-        ls -l target
-        cp ${{ format('target/release/rsaber_pcvr{0}', matrix.build_suffix) }} ${{ format('../output/rsaber_pcvr{0}', matrix.artifact_suffix) }}
+        cp ${{ format('../target/release/rsaber_pcvr{0}', matrix.build_suffix) }} ${{ format('../output/rsaber_pcvr{0}', matrix.artifact_suffix) }}
 
     - name: Prepare android
       if: matrix.target == 'android'
