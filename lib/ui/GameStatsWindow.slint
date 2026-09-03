@@ -6,8 +6,10 @@ export component GameStatsWindow inherits WindowBase {
     default-font-size: Const.default-font-size;
     background: Const.border-color;
 
-    in property<int> count;
-    in property<int> total;
+    in property<int> note_count;
+    in property<int> note_total;
+    in property<int> bomb_count;
+    in property<int> bomb_total;
 
     VerticalLayout {
         Text {
@@ -18,14 +20,25 @@ export component GameStatsWindow inherits WindowBase {
             height: Const.title-height;
         }
 
-        Rectangle {
+        rect := Rectangle {
             background: Const.content-background;
             border-color: Const.border-color;
             border-width: Const.border-width;
             border-radius: 2 * Const.border-width;
 
-            Text {
-                text: "Hits: \{root.count}/\{root.total}";
+            VerticalLayout {
+                width: rect.width - 2 * rect.border-width;
+                height: rect.height - 2 * rect.border-width;
+                alignment: center;
+                cross-axis-alignment: center;
+
+                Text {
+                    text: "Note hits: \{root.note_count}/\{root.note_total}";
+                }
+
+                Text {
+                    text: "Bomb hits: \{root.bomb_count}/\{root.bomb_total}";
+                }
             }
         }
     }

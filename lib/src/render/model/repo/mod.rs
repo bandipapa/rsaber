@@ -1,11 +1,14 @@
+mod bomb;
+pub use bomb::*;
+
 mod cube;
 pub use cube::*;
 
 mod floor;
 pub use floor::*;
 
-mod outlinebox;
-pub use outlinebox::*;
+mod obstacle;
+pub use obstacle::*;
 
 mod pointer;
 pub use pointer::*;

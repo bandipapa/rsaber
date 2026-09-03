@@ -13,7 +13,7 @@ use crate::asset::AssetManagerRc;
 use crate::macros::render_node;
 use crate::output::{Frame, OutputBindGroupLayoutDesc, OutputDeviceRc, OutputFragmentState, OutputPipelineLayoutDesc, OutputRenderPipelineDesc, OutputShaderModuleDesc, OutputVertexState, ViewMat};
 use crate::render::{RenderNodeBuildWithParam, RenderNodeExec};
-use crate::render::model::{InstGridBuf, InstOutlineBoxBuf, InstPhongColorBuf, InstShaderImplType, InstShaderSize, InstShaderType, InstSimpleColorBuf, InstWindowBuf, Mesh};
+use crate::render::model::{InstGridBuf, InstObstacleBuf, InstPhongColorBuf, InstShaderImplType, InstShaderSize, InstShaderType, InstSimpleColorBuf, InstWindowBuf, Mesh};
 use crate::ui::UIManagerRc;
 use crate::util::StatsRc;
 
@@ -40,11 +40,11 @@ struct Uni {
 @group(0) @binding(0) var<uniform> uni: Uni;
 ";
 
-pub trait ModelFactory: 'static { // The static lifetime is required by TypeId.
+pub trait ModelFactory {
     type Model: Model + 'static;
 
     fn get_id() -> TypeId {
-        TypeId::of::<Self>()
+        TypeId::of::<Self::Model>()
     }
 
     fn get_mesh(asset_mgr: AssetManagerRc, output_device: OutputDeviceRc) -> Mesh;
@@ -68,7 +68,7 @@ pub trait Model {
         panic!("Method is not implemented");
     }
 
-    fn fill_outlinebox(&self, _inst_index: u32) -> InstOutlineBoxBuf {
+    fn fill_obstacle(&self, _inst_index: u32) -> InstObstacleBuf {
         panic!("Method is not implemented");
     }
 }
@@ -473,7 +473,7 @@ impl RenderNodeExec for ModelRenderer {
         // TODO: implement dirty flag: only upload what is changed.
 
         render_pass.set_bind_group(0, &self.uni_bg, &[]); // See OutputPipelineLayoutDescriptor->bind_group_layouts.
-        
+
         for render_info in &self.render_infos {
             let mesh = &render_info.mesh;
             let mut mesh_bound = false;
@@ -516,7 +516,7 @@ impl RenderNodeExec for ModelRenderer {
                         (PhongColor, fill_phong_color),
                         (Grid, fill_grid),
                         (Window, fill_window),
-                        (OutlineBox, fill_outlinebox)
+                        (Obstacle, fill_obstacle)
                     );
 
                     if !mesh_bound {

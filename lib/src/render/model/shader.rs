@@ -355,7 +355,7 @@ impl InstWindowBuf {
     }
 }
 
-const INST_OUTLINEBOX_ATTRS: [VertexAttribute; 5] = vertex_attr_array![ // See vertex shader->@location().
+const INST_OBSTACLE_ATTRS: [VertexAttribute; 5] = vertex_attr_array![ // See vertex shader->@location().
     11 => Float32x3, // color
     12 => Float32,   // outline_width
     13 => Float32x3, // model_scale
@@ -363,9 +363,9 @@ const INST_OUTLINEBOX_ATTRS: [VertexAttribute; 5] = vertex_attr_array![ // See v
     15 => Float32x3, // model_pos
 ];
 
-pub struct InstOutlineBox;
+pub struct InstObstacle;
 
-impl InstOutlineBox {
+impl InstObstacle {
     fn new() -> Self {
         Self {
         }
@@ -382,13 +382,13 @@ impl InstOutlineBox {
 
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
-pub struct InstOutlineBoxBuf {
+pub struct InstObstacleBuf {
     color: Color,
     outline_width: f32,
     model_buf: ModelBuf,
 }
 
-impl InstOutlineBoxBuf {
+impl InstObstacleBuf {
     pub fn fill(color: &Color, outline_width: f32, model_scale: &Vector3<f32>, model_rot: &Quaternion<f32>, model_pos: &Vector3<f32>) -> Self {
         Self {
             color: *color,
@@ -407,7 +407,7 @@ pub mod InstShaderSize {
     pub static PhongColor: usize = mem::size_of::<super::InstPhongColorBuf>();
     pub static Grid: usize = mem::size_of::<super::InstGridBuf>();
     pub static Window: usize = mem::size_of::<super::InstWindowBuf>();
-    pub static OutlineBox: usize = mem::size_of::<super::InstOutlineBoxBuf>();
+    pub static Obstacle: usize = mem::size_of::<super::InstObstacleBuf>();
 }
 
 #[derive(Clone)]
@@ -416,7 +416,7 @@ pub enum InstShaderType {
     PhongColor,
     Grid,
     Window,
-    OutlineBox,
+    Obstacle,
 }
 
 impl InstShaderType {
@@ -426,7 +426,7 @@ impl InstShaderType {
             InstShaderType::PhongColor => "phongc",
             InstShaderType::Grid => "grid",
             InstShaderType::Window => "window",
-            InstShaderType::OutlineBox => "outlinebox",
+            InstShaderType::Obstacle => "obstacle",
         }
     }
 
@@ -436,7 +436,7 @@ impl InstShaderType {
             InstShaderType::PhongColor => (InstShaderSize::PhongColor, INST_PHONGCOLOR_ATTRS.as_slice()),
             InstShaderType::Grid => (InstShaderSize::Grid, INST_GRID_ATTRS.as_slice()),
             InstShaderType::Window => (InstShaderSize::Window, INST_WINDOW_ATTRS.as_slice()),
-            InstShaderType::OutlineBox => (InstShaderSize::OutlineBox, INST_OUTLINEBOX_ATTRS.as_slice()),
+            InstShaderType::Obstacle => (InstShaderSize::Obstacle, INST_OBSTACLE_ATTRS.as_slice()),
         };
 
         OutputVertexBufferLayout {
@@ -452,7 +452,7 @@ impl InstShaderType {
             InstShaderType::PhongColor => InstShaderImplType::PhongColor(InstPhongColor::new()),
             InstShaderType::Grid => InstShaderImplType::Grid(InstGrid::new()),
             InstShaderType::Window => InstShaderImplType::Window(InstWindow::new()),
-            InstShaderType::OutlineBox => InstShaderImplType::OutlineBox(InstOutlineBox::new()),
+            InstShaderType::Obstacle => InstShaderImplType::Obstacle(InstObstacle::new()),
         }
     }
 }
@@ -462,7 +462,7 @@ pub enum InstShaderImplType {
     PhongColor(InstPhongColor),
     Grid(InstGrid),
     Window(InstWindow),
-    OutlineBox(InstOutlineBox),
+    Obstacle(InstObstacle),
 }
 
 impl InstShaderImplType {
@@ -507,7 +507,7 @@ impl InstShaderImplType {
             InstShaderImplType::PhongColor(inst_sh_impl) => inst_sh_impl.create_bind_group(output_device, bg_layout),
             InstShaderImplType::Grid(inst_sh_impl) => inst_sh_impl.create_bind_group(output_device, bg_layout),
             InstShaderImplType::Window(inst_sh_impl) => inst_sh_impl.create_bind_group(output_device, bg_layout),
-            InstShaderImplType::OutlineBox(inst_sh_impl) => inst_sh_impl.create_bind_group(output_device, bg_layout),
+            InstShaderImplType::Obstacle(inst_sh_impl) => inst_sh_impl.create_bind_group(output_device, bg_layout),
         }
     }
 
@@ -517,7 +517,7 @@ impl InstShaderImplType {
             InstShaderImplType::PhongColor(inst_sh_impl) => inst_sh_impl.get_bind_layouts(),
             InstShaderImplType::Grid(inst_sh_impl) => inst_sh_impl.get_bind_layouts(),
             InstShaderImplType::Window(inst_sh_impl) => inst_sh_impl.get_bind_layouts(),
-            InstShaderImplType::OutlineBox(inst_sh_impl) => inst_sh_impl.get_bind_layouts(),
+            InstShaderImplType::Obstacle(inst_sh_impl) => inst_sh_impl.get_bind_layouts(),
         }
     }
 }

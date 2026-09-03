@@ -25,8 +25,14 @@ use serde_json::{Error as json_Error, Value};
 use crate::asset::{AssetError, AssetManagerRc};
 use crate::render::model::Color;
 use crate::songdef::SongDifficulty;
-#[cfg(feature = "test")]
-use crate::songdef::CHAR_STANDARD;
+
+cfg_select! {
+    feature = "test" => {
+        use crate::songdef::CHAR_STANDARD;
+        const TEST_NUM: usize = 100;
+    },
+    _ => {},
+}
 
 type Result<T> = result_Result<T, Error>;
 
@@ -604,6 +610,7 @@ struct BPMMap_V4_Range { // TODO: impl validity checks
 pub struct Beatmap {
     notes: Box<[Note]>,
     obstacles: Box<[Obstacle]>,
+    bombs: Box<[Bomb]>,
 }
 
 impl Beatmap {
@@ -645,24 +652,41 @@ impl Beatmap {
 
         let mut notes = Vec::new();
 
-        for i in 0..100 {
+        for i in 0..TEST_NUM {
             let note = Note::new(i as f32, 2, 1, NoteType::Right, cut_dir_it.next().unwrap());
             notes.push(note);
+        }
+
+        let mut obstacles = Vec::new();
+
+        for i in 0..TEST_NUM {
+            let obstacle = Obstacle::new(i as f32, 0, 1, 1.0, 1, 3);
+            obstacles.push(obstacle);
+        }
+
+        let mut bombs = Vec::new();
+
+        for i in 0..TEST_NUM {
+            let bomb = Bomb::new(i as f32, 3, 1);
+            bombs.push(bomb);
         }
         
         Ok(Self {
             notes: notes.into_boxed_slice(),
-            obstacles: Box::from([]),
+            obstacles: obstacles.into_boxed_slice(),
+            bombs: bombs.into_boxed_slice(),
         })
     }
 
-    fn new(mut notes: Vec<Note>, mut obstacles: Vec<Obstacle>) -> Self {
+    fn new(mut notes: Vec<Note>, mut obstacles: Vec<Obstacle>, mut bombs: Vec<Bomb>) -> Self {
         notes.sort_by(|note1, note2| note1.bpm_pos.partial_cmp(&note2.bpm_pos).expect("Unable to compare"));
         obstacles.sort_by(|obstacle1, obstacle2| obstacle1.bpm_pos.partial_cmp(&obstacle2.bpm_pos).expect("Unable to compare"));
+        bombs.sort_by(|bomb1, bomb2| bomb1.bpm_pos.partial_cmp(&bomb2.bpm_pos).expect("Unable to compare"));
 
         Self {
             notes: notes.into_boxed_slice(),
             obstacles: obstacles.into_boxed_slice(),
+            bombs: bombs.into_boxed_slice(),
         }
     }
 
@@ -672,6 +696,10 @@ impl Beatmap {
 
     pub fn get_obstacles(&self) -> &[Obstacle] {
         &self.obstacles
+    }
+
+    pub fn get_bombs(&self) -> &[Bomb] {
+        &self.bombs
     }
 }
 
@@ -780,6 +808,34 @@ impl Obstacle {
     }
 }
 
+pub struct Bomb {
+    bpm_pos: f32,
+    x: u8,
+    y: u8,
+}
+
+impl Bomb {
+    fn new(bpm_pos: f32, x: u8, y: u8) -> Self {
+        Self {
+            bpm_pos,
+            x,
+            y,
+        }
+    }
+
+    pub fn get_bpm_pos(&self) -> f32 {
+        self.bpm_pos
+    }
+
+    pub fn get_x(&self) -> u8 {
+        self.x
+    }
+
+    pub fn get_y(&self) -> u8 {
+        self.y
+    }
+}
+
 #[derive(Deserialize)]
 struct Beatmap_V2 {
     #[serde(rename = "_notes")]
@@ -792,15 +848,26 @@ impl Beatmap_V2 {
     fn build(self) -> Result<Beatmap> {
         let mut notes = Vec::new();
         let mut obstacles = Vec::new();
+        let mut bombs = Vec::new();
 
         for raw_note in self.notes {
-            let (x, y, note_type) = match parse_note(raw_note.x, raw_note.y, raw_note.note_type) {
-                Ok(r) => r,
-                Err(_) => continue, // TODO: provide strict mode
-            };
+            if raw_note.note_type != 3 {
+                let (x, y, note_type) = match parse_note(raw_note.x, raw_note.y, raw_note.note_type) {
+                    Ok(r) => r,
+                    Err(_) => continue, // TODO: provide strict mode
+                };
 
-            let note = Note::new(raw_note.bpm_pos, x, y, note_type, raw_note.cut_dir);
-            notes.push(note);
+                let note = Note::new(raw_note.bpm_pos, x, y, note_type, raw_note.cut_dir);
+                notes.push(note);
+            } else {
+                let (x, y) = match parse_bomb(raw_note.x, raw_note.y) {
+                    Ok(r) => r,
+                    Err(_) => continue, // TODO: provide strict mode
+                };
+
+                let bomb = Bomb::new(raw_note.bpm_pos, x, y);
+                bombs.push(bomb);
+            }
         }
 
         for raw_obstacle in self.obstacles {
@@ -829,7 +896,7 @@ impl Beatmap_V2 {
             obstacles.push(obstacle);
         }
 
-        Ok(Beatmap::new(notes, obstacles))
+        Ok(Beatmap::new(notes, obstacles, bombs))
     }
 }
 
@@ -871,12 +938,15 @@ struct Beatmap_V3 {
     notes: Vec<Beatmap_V3_Note>,
     #[serde(rename = "obstacles")]
     obstacles: Vec<Beatmap_V3_Obstacle>,
+    #[serde(rename = "bombNotes")]
+    bombs: Vec<Beatmap_V3_Bomb>,
 }
 
 impl Beatmap_V3 {
     fn build(self) -> Result<Beatmap> {
         let mut notes = Vec::new();
         let mut obstacles = Vec::new();
+        let mut bombs = Vec::new();
 
         for raw_note in self.notes {
             let (x, y, note_type) = match parse_note(raw_note.x, raw_note.y, raw_note.note_type) {
@@ -898,7 +968,17 @@ impl Beatmap_V3 {
             obstacles.push(obstacle);
         }
 
-        Ok(Beatmap::new(notes, obstacles))
+        for raw_bomb in self.bombs {
+            let (x, y) = match parse_bomb(raw_bomb.x, raw_bomb.y) {
+                Ok(r) => r,
+                Err(_) => continue, // TODO: provide strict mode
+            };
+
+            let bomb = Bomb::new(raw_bomb.bpm_pos, x, y);
+            bombs.push(bomb);
+        }
+
+        Ok(Beatmap::new(notes, obstacles, bombs))
     }
 }
 
@@ -929,6 +1009,14 @@ struct Beatmap_V3_Obstacle { // TODO: impl validate
 }
 
 #[derive(Deserialize)]
+struct Beatmap_V3_Bomb {
+    #[serde(rename = "b")]
+    bpm_pos: f32,
+    x: i32,
+    y: i32,
+}
+
+#[derive(Deserialize)]
 struct Beatmap_V4 {
     #[serde(rename = "colorNotes")]
     notes: Vec<Beatmap_V4_Note>,
@@ -938,12 +1026,17 @@ struct Beatmap_V4 {
     obstacles: Vec<Beatmap_V4_Obstacle>,
     #[serde(rename = "obstaclesData")]
     obstacle_datas: Vec<Beatmap_V4_ObstacleData>,
+    #[serde(rename = "bombNotes")]
+    bombs: Vec<Beatmap_V4_Bomb>,
+    #[serde(rename = "bombNotesData")]
+    bomb_datas: Vec<Beatmap_V4_BombData>,
 }
 
 impl Beatmap_V4 {
     fn build(self) -> Result<Beatmap> {
         let mut notes = Vec::new();
         let mut obstacles = Vec::new();
+        let mut bombs = Vec::new();
 
         for raw_note in self.notes {
             if let Some(raw_note_data) = self.note_datas.get(raw_note.data_index as usize) { // TODO: provide strict mode
@@ -969,7 +1062,19 @@ impl Beatmap_V4 {
             }
         }
 
-        Ok(Beatmap::new(notes, obstacles))
+        for raw_bomb in self.bombs {
+            if let Some(raw_bomb_data) = self.bomb_datas.get(raw_bomb.data_index as usize)  { // TODO: provide strict mode
+                let (x, y) = match parse_bomb(raw_bomb_data.x, raw_bomb_data.y) {
+                    Ok(r) => r,
+                    Err(_) => continue, // TODO: provide strict mode
+                };
+
+                let bomb = Bomb::new(raw_bomb.bpm_pos, x, y);
+                bombs.push(bomb);
+            }
+        }
+
+        Ok(Beatmap::new(notes, obstacles, bombs))
     }
 }
 
@@ -1009,6 +1114,20 @@ struct Beatmap_V4_ObstacleData { // TODO: impl validate
     width: i32,
     #[serde(rename = "h")]
     height: i32,
+}
+
+#[derive(Deserialize)]
+struct Beatmap_V4_Bomb {
+    #[serde(rename = "b")]
+    bpm_pos: f32,
+    #[serde(rename = "i")]
+    data_index: u32,
+}
+
+#[derive(Deserialize)]
+struct Beatmap_V4_BombData {
+    x: i32,
+    y: i32,
 }
 
 // FloatColor
@@ -1118,4 +1237,12 @@ fn parse_obstacle(raw_x: i32, raw_y: i32, raw_width: i32, raw_height: i32) -> Re
     }
 
     Ok((raw_x.try_into().unwrap(), raw_y.try_into().unwrap(), raw_width.try_into().unwrap(), raw_height.try_into().unwrap()))
+}
+
+fn parse_bomb(raw_x: i32, raw_y: i32) -> Result<(u8, u8)> {
+    if !((0..=3).contains(&raw_x) && (0..=2).contains(&raw_y)) {
+        return Err(Error::Build("Either bomb x or y invalid".to_string()));
+    }
+
+    Ok((raw_x.try_into().unwrap(), raw_y.try_into().unwrap()))
 }

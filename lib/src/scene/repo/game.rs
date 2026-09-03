@@ -21,7 +21,7 @@ use crate::util::StatsRc;
 
 const CELL_SIZE: f32 = 0.5; // [m]
 const CELL_SPACING: f32 = 0.10; // [m]
-const CUBE_FLOOR: f32 = 0.6; // [m]
+const CUBE_BOMB_FLOOR: f32 = 0.6; // [m]
 const OBSTACLE_FLOOR: f32 = 0.3; // [m]
 
 const OFFSET_Y: f32 = 1.0; // When ts == obj.ts, then distance between the player and the front side of the object [m]
@@ -36,6 +36,9 @@ const ZONE_IN3_DIST: f32 = 10.0; // [m]
 const ZONE_OUT_DIST: f32 = 15.0; // [m]
 
 const G: f32 = 9.8; // [m/s2]
+
+const BOMB_COLOR: Color = Color([0.5, 0.5, 0.5]);
+const BOMB_PHONG_PARAM: PhongParam = PhongParam::new(0.1, 0.2, 0.3, 64.0);
 
 pub struct GameParam {
     asset_mgr: AssetManagerRc,
@@ -71,6 +74,7 @@ pub struct Game {
     zone_info: Rc<ZoneInfo>,
     cube_infos: Box<[Rc<CubeInfo>]>,
     obstacle_infos: Box<[Rc<ObstacleInfo>]>,
+    bomb_infos: Box<[Rc<BombInfo>]>,
     game_stats_window_weak: slintimpl::Weak<GameStatsWindow>,
     saber_l: Rc<Saber>,
     saber_r: Rc<Saber>,
@@ -146,7 +150,14 @@ struct ObstacleInfo {
     z: f32,
     scale_x: f32,
     scale_z: f32,
-    outlinebox: Rc<OutlineBox>,
+    obstacle: Rc<Obstacle>,
+}
+
+struct BombInfo {
+    ts: f32,
+    x: f32,
+    z: f32,
+    bomb: Rc<Bomb>,
 }
 
 struct AudioInfo {
@@ -161,6 +172,7 @@ struct Inner {
     alive_objs: AliveObjs,
     cube_range_end: usize,
     obstacle_range_end: usize,
+    bomb_range_end: usize,
     prev_audio_ts: f32,
     prev_click: bool,
     game_stats: GameStats,
@@ -171,6 +183,9 @@ type AliveObjs = Vec<Box<dyn Obj>>;
 // Implementors of the Obj trait are providing the actual object behaviour.
 trait Obj {
     fn update(&mut self, audio_ts: f32, ts_diff: f32, scene_input: &SceneInput, game_stats: &mut GameStats) -> UpdateResult;
+
+    #[cfg(feature = "test")]
+    fn get_type(&self) -> ObjType;
 }
 
 enum UpdateResult {
@@ -245,15 +260,15 @@ impl Game {
 
         let beatmap = beatmap_info.load().map_err(|e| format!("Unable to load beatmap: {:?}", e))?; // TODO: instead of debug, use display trait for formatting error msg?
 
-        let cube_infos = Box::from_iter(beatmap.get_notes().iter().filter_map(|note| {
-            let bpm_pos = note.get_bpm_pos();
+        let cube_infos = Box::from_iter(beatmap.get_notes().iter().filter_map(|note_data| {
+            let bpm_pos = note_data.get_bpm_pos();
 
             if let Some(ts) = bpm_info.get_ts(bpm_pos) {
-                let note_type = note.get_note_type();
+                let note_type = note_data.get_note_type();
                 let mut any = false;
                 let mut symbol = CubeSymbol::Arrow;
 
-                let angle = match note.get_cut_dir() {
+                let angle = match note_data.get_cut_dir() {
                     NoteCutDir::Up => match note_type {
                         NoteType::Left => -180.0,
                         NoteType::Right => 180.0,
@@ -283,7 +298,7 @@ impl Game {
 
                 // Cube bounding box is unit (1m) sized and the object center is at the origin.
 
-                let (x, z) = Self::calc_xz(note.get_x(), note.get_y());
+                let (x, z) = Self::calc_xz(note_data.get_x(), note_data.get_y());
 
                 let cube_info = Rc::new(CubeInfo {
                     ts,
@@ -301,16 +316,16 @@ impl Game {
             }
         }));
 
-        let obstacle_infos = Box::from_iter(beatmap.get_obstacles().iter().filter_map(|obstacle| {
-            let bpm_pos = obstacle.get_bpm_pos();
-            let duration = obstacle.get_duration();
+        let obstacle_infos = Box::from_iter(beatmap.get_obstacles().iter().filter_map(|obstacle_data| {
+            let bpm_pos = obstacle_data.get_bpm_pos();
+            let duration = obstacle_data.get_duration();
 
             if let Some(ts_start) = bpm_info.get_ts(bpm_pos) &&
                let Some(ts_end) = bpm_info.get_ts(bpm_pos + duration) {
                 // Obstacle bounding box is unit (1m) sized and the object center is at the origin.
 
-                let (start_x, start_z) = Self::calc_xz(obstacle.get_x(), obstacle.get_y());
-                let (end_x, end_z) = Self::calc_xz(obstacle.get_x() + obstacle.get_width() - 1, obstacle.get_y() + obstacle.get_height() - 1);
+                let (start_x, start_z) = Self::calc_xz(obstacle_data.get_x(), obstacle_data.get_y());
+                let (end_x, end_z) = Self::calc_xz(obstacle_data.get_x() + obstacle_data.get_width() - 1, obstacle_data.get_y() + obstacle_data.get_height() - 1);
 
                 let x = (end_x + start_x) / 2.0;
                 let z = (end_z + start_z) / 2.0 + OBSTACLE_FLOOR;
@@ -318,8 +333,8 @@ impl Game {
                 let scale_x = end_x - start_x + CELL_SIZE;
                 let scale_z = end_z - start_z + CELL_SIZE;
 
-                let outlinebox_param = OutlineBoxParam::new(color_scheme.get_obstacle(), OUTLINE_WIDTH);
-                let outlinebox = model_reg.create(outlinebox_param);
+                let obstacle_param = ObstacleParam::new(color_scheme.get_obstacle(), OUTLINE_WIDTH);
+                let obstacle = model_reg.create(obstacle_param);
 
                 let obstacle_info = Rc::new(ObstacleInfo {
                     ts_start,
@@ -328,10 +343,35 @@ impl Game {
                     z,
                     scale_x,
                     scale_z,
-                    outlinebox,
+                    obstacle,
                 });
 
                 Some(obstacle_info)
+            } else {
+                None
+            }
+        }));
+
+        let bomb_infos = Box::from_iter(beatmap.get_bombs().iter().filter_map(|bomb_data| {
+            let bpm_pos = bomb_data.get_bpm_pos();
+
+            if let Some(ts) = bpm_info.get_ts(bpm_pos) {
+                let bomb_param = BombParam::new(&BOMB_COLOR, &BOMB_PHONG_PARAM);
+                let bomb = model_reg.create(bomb_param);
+                bomb.set_scale(CELL_SIZE);
+
+                // Bomb bounding box is unit (1m) sized and the object center is at the origin.
+
+                let (x, z) = Self::calc_xz(bomb_data.get_x(), bomb_data.get_y());
+
+                let bomb_info = Rc::new(BombInfo {
+                    ts,
+                    x,
+                    z,
+                    bomb,
+                });
+
+                Some(bomb_info)
             } else {
                 None
             }
@@ -402,9 +442,10 @@ impl Game {
             alive_objs: Vec::new(),
             cube_range_end: 0,
             obstacle_range_end: 0,
+            bomb_range_end: 0,
             prev_audio_ts: 0.0, // TODO: is this correct to default it to 0?
             prev_click: true,
-            game_stats: GameStats::new(cube_infos.len().try_into().unwrap()),
+            game_stats: GameStats::new(cube_infos.len().try_into().unwrap(), bomb_infos.len().try_into().unwrap()),
         };
         
         Ok(Self {
@@ -412,6 +453,7 @@ impl Game {
             zone_info,
             cube_infos,
             obstacle_infos,
+            bomb_infos,
             game_stats_window_weak,
             saber_l,
             saber_r,
@@ -435,6 +477,9 @@ impl Game {
         let obstacle_infos = &self.obstacle_infos;
         let obstacle_range_end = &mut inner.obstacle_range_end;
 
+        let bomb_infos = &self.bomb_infos;
+        let bomb_range_end = &mut inner.bomb_range_end;
+
         if self.audio_info_opt.is_some() {
             // Handle cubes.
 
@@ -457,7 +502,7 @@ impl Game {
                 let obstacle_info = &obstacle_infos[i];
 
                 if obstacle_info.ts_start <= ts_in {
-                    let obj = ObstacleObj::new(Rc::clone(zone_info), Rc::clone(obstacle_info));
+                    let obj = ObstacleObj::new(Rc::clone(zone_info), Rc::clone(obstacle_info), #[cfg(feature = "test")] false);
                     alive_objs.push(Box::new(obj));
 
                     *obstacle_range_end = i + 1;
@@ -465,16 +510,69 @@ impl Game {
                     break;
                 }
             }
+
+            // Handle bombs.
+
+            for i in *bomb_range_end..bomb_infos.len() {
+                let bomb_info = &bomb_infos[i];
+
+                if bomb_info.ts <= ts_in {
+                    let obj = BombObj::new(Rc::clone(zone_info), Rc::clone(bomb_info), #[cfg(feature = "test")] false);
+                    alive_objs.push(Box::new(obj));
+
+                    *bomb_range_end = i + 1;
+                } else {
+                    break;
+                }
+            }
         } else {
             #[cfg(feature = "test")]
             {
-                if alive_objs.is_empty() {
+                let mut count_info = CountInfo {
+                    cube: 0,
+                    obstacle: 0,
+                    bomb: 0,
+                };
+
+                for obj in alive_objs.iter() {
+                    match obj.get_type() {
+                        ObjType::Cube => count_info.cube += 1,
+                        ObjType::Obstacle => count_info.obstacle += 1,
+                        ObjType::Bomb => count_info.bomb += 1,
+                    }
+                }
+
+                // Handle cubes.
+
+                if count_info.cube == 0 && *cube_range_end < cube_infos.len() {
                     let cube_info = &cube_infos[*cube_range_end];
 
                     let obj = CubeObj::new(Rc::clone(zone_info), Rc::clone(cube_info), true);
                     alive_objs.push(Box::new(obj));
 
                     *cube_range_end += 1;
+                }
+
+                // Handle obstacles.
+                
+                if count_info.obstacle == 0 && *obstacle_range_end < obstacle_infos.len() {
+                    let obstacle_info = &obstacle_infos[*obstacle_range_end];
+
+                    let obj = ObstacleObj::new(Rc::clone(zone_info), Rc::clone(obstacle_info), true);
+                    alive_objs.push(Box::new(obj));
+
+                    *obstacle_range_end += 1;
+                }
+
+                // Handle bombs.
+                
+                if count_info.bomb == 0 && *bomb_range_end < bomb_infos.len() {
+                    let bomb_info = &bomb_infos[*bomb_range_end];
+
+                    let obj = BombObj::new(Rc::clone(zone_info), Rc::clone(bomb_info), true);
+                    alive_objs.push(Box::new(obj));
+
+                    *bomb_range_end += 1;
                 }
             }
         }
@@ -514,8 +612,10 @@ impl Game {
                 move || { // TODO: use slint struct?
                     let window = window_weak.unwrap();
 
-                    window.set_count(stats_inner.count.try_into().unwrap());
-                    window.set_total(stats_inner.total.try_into().unwrap());
+                    window.set_note_count(stats_inner.note_count.try_into().unwrap());
+                    window.set_note_total(stats_inner.note_total.try_into().unwrap());
+                    window.set_bomb_count(stats_inner.bomb_count.try_into().unwrap());
+                    window.set_bomb_total(stats_inner.bomb_total.try_into().unwrap());
                 }
             });
         }
@@ -577,12 +677,7 @@ impl Scene for Game {
                 }
 
                 let ts = inner.start_time.elapsed().as_secs_f32();
-
-                if !(inner.alive_objs.is_empty() && inner.cube_range_end == self.cube_infos.len()) {
-                    self.update_objs(inner, ts, scene_input);
-                } else {
-                    done = true;
-                }
+                self.update_objs(inner, ts, scene_input);
             }
         }
 
@@ -774,9 +869,9 @@ impl Obj for CubeObj {
         let (y, (z_base, angle)) = zone_info.calc(ts, |state| {
             match state {
                 ZoneInfoState::In1 => (0.0, 0.0),
-                ZoneInfoState::In2(factor) => (CUBE_FLOOR * Deg(90.0 * factor).sin(), cube_info.angle * factor),
-                ZoneInfoState::In3 => (CUBE_FLOOR, cube_info.angle),
-                ZoneInfoState::Out => (CUBE_FLOOR, cube_info.angle),
+                ZoneInfoState::In2(factor) => (calc_z_base(factor), cube_info.angle * factor),
+                ZoneInfoState::In3 => (CUBE_BOMB_FLOOR, cube_info.angle),
+                ZoneInfoState::Out => (CUBE_BOMB_FLOOR, cube_info.angle),
             }
         });
 
@@ -794,6 +889,7 @@ impl Obj for CubeObj {
         };
 
         // Do hit detection.
+        // TODO: implement procedural obj fracturing.
 
         if let Some(pose) = pose_opt && pose.get_render() && let Some(len) = self.test_touch(&pos, &rot, pose) {
             let mut sliced = false;
@@ -816,11 +912,11 @@ impl Obj for CubeObj {
                 cube_info.cube.sliced();
 
                 let new_alive_objs: AliveObjs = vec![
-                    Box::new(SlicedObj::new(Rc::clone(cube_info), &pos, false)),
-                    Box::new(SlicedObj::new(Rc::clone(cube_info), &pos, true)),
+                    Box::new(CubeSlicedObj::new(Rc::clone(cube_info), &pos, false)),
+                    Box::new(CubeSlicedObj::new(Rc::clone(cube_info), &pos, true)),
                 ];
 
-                game_stats.inc_count();
+                game_stats.inc_note_count();
                 pose.apply_haptic();
 
                 return UpdateResult::Replace(new_alive_objs);
@@ -833,9 +929,14 @@ impl Obj for CubeObj {
 
         UpdateResult::Keep
     }
+
+    #[cfg(feature = "test")]
+    fn get_type(&self) -> ObjType {
+        ObjType::Cube
+    }
 }
 
-struct SlicedObj {
+struct CubeSlicedObj {
     cube_info: Rc<CubeInfo>,
     pos: Vector3<f32>,
     right: bool,
@@ -845,7 +946,7 @@ struct SlicedObj {
     ts_diff_acc: f32,
 }
 
-impl SlicedObj {
+impl CubeSlicedObj {
     fn new(cube_info: Rc<CubeInfo>, pos: &Vector3<f32>, right: bool) -> Self {
         let factor = if !right {
             -1.0
@@ -867,7 +968,7 @@ impl SlicedObj {
     }
 }
 
-impl Obj for SlicedObj {
+impl Obj for CubeSlicedObj {
     fn update(&mut self, _audio_ts: f32, ts_diff: f32, _scene_input: &SceneInput, _game_stats: &mut GameStats) -> UpdateResult {
         let cube_info = &self.cube_info;
 
@@ -903,52 +1004,242 @@ impl Obj for SlicedObj {
             UpdateResult::Remove
         }
     }
+
+    #[cfg(feature = "test")]
+    fn get_type(&self) -> ObjType {
+        ObjType::Cube
+    }
 }
 
 struct ObstacleObj {
     zone_info: Rc<ZoneInfo>,
     obstacle_info: Rc<ObstacleInfo>,
+    #[cfg(feature = "test")]
+    test: bool,
 }
 
 impl ObstacleObj {
-    fn new(zone_info: Rc<ZoneInfo>, obstacle_info: Rc<ObstacleInfo>) -> Self {
-        obstacle_info.outlinebox.set_visible(true);
+    fn new(zone_info: Rc<ZoneInfo>, obstacle_info: Rc<ObstacleInfo>, #[cfg(feature = "test")] test: bool) -> Self {
+        obstacle_info.obstacle.set_visible(true);
 
         Self {
             zone_info,
             obstacle_info,
+            #[cfg(feature = "test")]
+            test,
         }
     }
 }
 
 impl Obj for ObstacleObj {
     fn update(&mut self, audio_ts: f32, _ts_diff: f32, _scene_input: &SceneInput, _game_stats: &mut GameStats) -> UpdateResult {
-        let zone_info = &self.zone_info;
-        let obstacle_info = &self.obstacle_info;
+        #[expect(unused_mut)]
+        let mut test = false;
+        #[cfg(feature = "test")]
+        {
+            test = self.test;
+        }
 
         // Hide outgoing obstacle.
 
-        let ts_out = audio_ts - zone_info.out_t;
+        let zone_info = &self.zone_info;
+        let obstacle_info = &self.obstacle_info;
 
-        if obstacle_info.ts_end < ts_out {
-            obstacle_info.outlinebox.set_visible(false);
-            return UpdateResult::Remove;
+        if !test {
+            let ts_out = audio_ts - zone_info.out_t;
+
+            if obstacle_info.ts_end < ts_out {
+                obstacle_info.obstacle.set_visible(false);
+                return UpdateResult::Remove;
+            }
         }
 
         // Update position & scale. Scale needs to be updated as well,
         // since the obstacle front and back can have different speeds
         // depending on their position.
 
-        let (start_y, _) = zone_info.calc(obstacle_info.ts_start - audio_ts, |_| {});
-        let (end_y, _) = zone_info.calc(obstacle_info.ts_end - audio_ts, |_| {});
+        let ts_start = if !test { obstacle_info.ts_start - audio_ts } else { 0.0 };
+        let ts_end = if !test { obstacle_info.ts_end - audio_ts } else { 2.0 };
+
+        let (start_y, _) = zone_info.calc(ts_start, |_| {});
+        let (end_y, _) = zone_info.calc(ts_end, |_| {});
 
         let scale_y = end_y - start_y;
         let y = (end_y + start_y) / 2.0 + OFFSET_Y;
 
-        obstacle_info.outlinebox.set_scale(obstacle_info.scale_x, scale_y, obstacle_info.scale_z);
-        obstacle_info.outlinebox.set_pos(&Vector3::new(obstacle_info.x, y, obstacle_info.z));
+        obstacle_info.obstacle.set_scale(obstacle_info.scale_x, scale_y, obstacle_info.scale_z);
+        obstacle_info.obstacle.set_pos(&Vector3::new(obstacle_info.x, y, obstacle_info.z));
         
         UpdateResult::Keep
+    }
+
+    #[cfg(feature = "test")]
+    fn get_type(&self) -> ObjType {
+        ObjType::Obstacle
+    }
+}
+
+struct BombObj {
+    zone_info: Rc<ZoneInfo>,
+    bomb_info: Rc<BombInfo>,
+    #[cfg(feature = "test")]
+    test: bool,
+}
+
+impl BombObj {
+    fn new(zone_info: Rc<ZoneInfo>, bomb_info: Rc<BombInfo>, #[cfg(feature = "test")] test: bool) -> Self {
+        bomb_info.bomb.set_visible(true);
+
+        Self {
+            zone_info,
+            bomb_info,
+            #[cfg(feature = "test")]
+            test,
+        }
+    }
+
+    fn test(&self, bomb_pos: &Vector3<f32>, pose: &dyn ScenePose) -> bool {
+        // Short circuit calculation, if the bomb and the saber are too far from each other.
+
+        let saber_len = SABER_DIR.magnitude();
+
+        let d = bomb_pos - pose.get_pos();
+        if d.magnitude() > saber_len + CELL_SIZE / 2.0 {
+            return false;
+        }
+
+        // Determine if saber intersects bomb bounding sphere:
+        // - Saber: p(t) = saber_pos + saber_dir * t, t should be in [0, saber_len]
+        // - Intersection: |p - bomb_pos|^2 = r^2
+
+        let saber_pos = pose.get_pos();
+        let saber_dir = pose.get_rot() * SABER_DIR.normalize();
+
+        let e = saber_pos - *bomb_pos;
+        let a = saber_dir.dot(saber_dir);
+        let b = 2.0 * e.dot(saber_dir);
+        let c = e.dot(e) - (CELL_SIZE / 2.0).powi(2);
+
+        let d = b.powi(2) - 4.0 * a * c;
+        if d < 0.0 {
+            return false;
+        }
+
+        let d = d.sqrt();
+
+        for t in [-1.0, 1.0].iter().map(|sign| (-b + sign * d) / (2.0 * a)) {
+            if (0.0..=saber_len).contains(&t) {
+                return true;
+            }
+        }
+
+        false
+    }
+}
+
+impl Obj for BombObj {
+    fn update(&mut self, audio_ts: f32, _ts_diff: f32, scene_input: &SceneInput, game_stats: &mut GameStats) -> UpdateResult {
+        #[expect(unused_mut)]
+        let mut test = false;
+        #[cfg(feature = "test")]
+        {
+            test = self.test;
+        }
+
+        // Hide outgoing bomb.
+
+        let zone_info = &self.zone_info;
+        let bomb_info = &self.bomb_info;
+
+        if !test {
+            let ts_out = audio_ts - zone_info.out_t;
+
+            if bomb_info.ts < ts_out {
+                bomb_info.bomb.set_visible(false);
+                return UpdateResult::Remove;
+            }
+        }
+
+        // Update position.
+
+        let ts = if !test { bomb_info.ts - audio_ts } else { 0.0 };
+
+        let (y, z_base) = zone_info.calc(ts, |state| {
+            match state {
+                ZoneInfoState::In1 => 0.0,
+                ZoneInfoState::In2(factor) => calc_z_base(factor),
+                ZoneInfoState::In3 => CUBE_BOMB_FLOOR,
+                ZoneInfoState::Out => CUBE_BOMB_FLOOR,
+            }
+        });
+
+        let pos = Vector3::new(bomb_info.x, y + CELL_SIZE / 2.0 + OFFSET_Y, bomb_info.z + z_base); // TODO: ts_in/ts_out should be offseted because of OFFSET_Y.
+        bomb_info.bomb.set_pos(&pos);
+
+        // Do hit detection.
+        // TODO: implement procedural obj fracturing.
+
+        for pose_opt in [scene_input.pose_l_opt, scene_input.pose_r_opt] {
+            if let Some(pose) = pose_opt && pose.get_render() && self.test(&pos, pose) {
+                let new_alive_objs: AliveObjs = vec![
+                    Box::new(BombSlicedObj::new(Rc::clone(bomb_info), &pos)),
+                ];
+
+                game_stats.inc_bomb_count();
+                pose.apply_haptic();
+
+                return UpdateResult::Replace(new_alive_objs);
+            }
+        }
+        
+        UpdateResult::Keep
+    }
+
+    #[cfg(feature = "test")]
+    fn get_type(&self) -> ObjType {
+        ObjType::Bomb
+    }
+}
+
+struct BombSlicedObj {
+    bomb_info: Rc<BombInfo>,
+    pos: Vector3<f32>,
+    v: Vector3<f32>, // [m/s]
+}
+
+impl BombSlicedObj {
+    fn new(bomb_info: Rc<BombInfo>, pos: &Vector3<f32>) -> Self {
+        Self {
+            bomb_info,
+            pos: *pos,
+            v: Vector3::new(rand::random_range(-1.0..1.0), rand::random_range(-1.0..0.0), rand::random_range(-2.0..0.0)),
+        }
+    }
+}
+
+impl Obj for BombSlicedObj {
+    fn update(&mut self, _audio_ts: f32, ts_diff: f32, _scene_input: &SceneInput, _game_stats: &mut GameStats) -> UpdateResult {
+        let bomb_info = &self.bomb_info;
+
+        // Handle gravity and position.
+
+        self.v.z -= G * ts_diff;
+        self.pos += self.v * ts_diff;
+
+        let visible = self.pos.z > -CELL_SIZE; // Should be enough.
+
+        if visible {
+            bomb_info.bomb.set_pos(&self.pos);
+            UpdateResult::Keep
+        } else {
+            bomb_info.bomb.set_visible(false);
+            UpdateResult::Remove
+        }
+    }
+
+    #[cfg(feature = "test")]
+    fn get_type(&self) -> ObjType {
+        ObjType::Bomb
     }
 }
 
@@ -959,15 +1250,19 @@ struct GameStats {
 
 #[derive(Copy, Clone)]
 struct GameStatsInner {
-    count: u32,
-    total: u32,
+    note_count: u32,
+    note_total: u32,
+    bomb_count: u32,
+    bomb_total: u32,
 }
 
 impl GameStats {
-    fn new(total: u32) -> Self {
+    fn new(note_total: u32, bomb_total: u32) -> Self {
         let inner = GameStatsInner {
-            count: 0,
-            total,
+            note_count: 0,
+            note_total,
+            bomb_count: 0,
+            bomb_total,
         };
 
         Self {
@@ -980,8 +1275,13 @@ impl GameStats {
         self.inner
     }
 
-    fn inc_count(&mut self) {
-        self.inner.count += 1;
+    fn inc_note_count(&mut self) {
+        self.inner.note_count += 1;
+        self.changed()
+    }
+
+    fn inc_bomb_count(&mut self) {
+        self.inner.bomb_count += 1;
         self.changed()
     }
 
@@ -994,4 +1294,25 @@ impl GameStats {
         self.changed = false;
         changed
     }
+}
+
+cfg_select! {
+    feature = "test" => {
+        enum ObjType {
+            Cube,
+            Obstacle,
+            Bomb,
+        }
+
+        struct CountInfo {
+            cube: usize,
+            obstacle: usize,
+            bomb: usize,
+        }
+    },
+    _ => {},
+}
+
+fn calc_z_base(factor: f32) -> f32 {
+    CUBE_BOMB_FLOOR * Deg(90.0 * factor).sin()    
 }

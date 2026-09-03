@@ -53,10 +53,15 @@ impl<T> MuCo<T> {
 pub type StatsRc = Arc<Stats>;
 
 pub struct Stats {
-    // Although the render is happening on a single thread, we are already
-    // prepared for multi-threading, that's the reason for Mutex.
+    // Implementation notes:
+    // - The render and the UI rendering are happening on different threads,
+    //   so we need to use Mutex to protect the data.
+    // - To provide consistent snapshot for UI, we use two copies of the data:
+    //   one for the render thread to update, and one for the UI thread to read.
+    // TODO: Replace it with mailbox?
     
     inner_mutex: Mutex<StatsInner>,
+    finished_mutex: Mutex<StatsInner>,
 }
 
 #[derive(Copy, Clone)]
@@ -82,14 +87,22 @@ impl Stats {
 
         Self {
             inner_mutex: Mutex::new(inner),
+            finished_mutex: Mutex::new(inner),
         }
-    }
-
-    pub fn get_inner(&self) -> StatsInner {
-        *self.inner_mutex.lock().unwrap()
     }
 
     pub fn get_inner_mut(&self) -> MutexGuard<'_, StatsInner> {
         self.inner_mutex.lock().unwrap()
+    }
+
+    pub fn finish(&self) {
+        let inner = self.inner_mutex.lock().unwrap();
+        let mut finished = self.finished_mutex.lock().unwrap();
+
+        *finished = *inner;
+    }
+
+    pub fn get_inner(&self) -> StatsInner {
+        *self.finished_mutex.lock().unwrap()
     }
 }

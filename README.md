@@ -116,6 +116,10 @@ rsaber_pcvr
 - [rust wgpu](https://docs.rs/wgpu/latest/wgpu/)
 - [Normal Transformation](https://paroj.github.io/gltut/Illumination/Tut09%20Normal%20Transformation.html)
 
+## Credits
+
+- Some assets were taken from the excellent [ArcViewer](https://github.com/AllPoland/ArcViewer).
+
 ## TODO
 
 - Have the option to dump/read assets from local files (this is for modders who don't want to recompile)

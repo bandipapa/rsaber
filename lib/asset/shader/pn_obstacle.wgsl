@@ -1,4 +1,4 @@
-// Outline box shader
+// Obstacle shader
 
 #COMMON#
 

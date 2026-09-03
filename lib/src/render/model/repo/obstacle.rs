@@ -6,18 +6,18 @@ use wgpu::util::BufferInitDescriptor;
 
 use crate::asset::AssetManagerRc;
 use crate::output::OutputDeviceRc;
-use crate::render::model::{Color, InstOutlineBoxBuf, InstShaderImplType, InstShaderType, Mesh, Model, ModelFactory, ModelHandle, Submesh, VertexPosNormal, VertexShaderType, get_default_primitive_state};
+use crate::render::model::{Color, InstObstacleBuf, InstShaderImplType, InstShaderType, Mesh, Model, ModelFactory, ModelHandle, Submesh, VertexPosNormal, VertexShaderType, get_default_primitive_state};
 use crate::ui::UIManagerRc;
 
 const POS: f32 = 0.5;
 const OUTLINE: f32 = 1.0;
 
-pub struct OutlineBoxParam {
+pub struct ObstacleParam {
     color: Color,
     outline_width: f32,
 }
 
-impl OutlineBoxParam {
+impl ObstacleParam {
     pub fn new(color: &Color, outline_width: f32) -> Self {
         Self {
             color: *color,
@@ -26,8 +26,8 @@ impl OutlineBoxParam {
     }    
 }
 
-impl ModelFactory for OutlineBoxParam {
-    type Model = OutlineBox;
+impl ModelFactory for ObstacleParam {
+    type Model = Obstacle;
 
     fn get_mesh(_asset_mgr: AssetManagerRc, output_device: OutputDeviceRc) -> Mesh {
         // Implementation notes:
@@ -109,7 +109,7 @@ impl ModelFactory for OutlineBoxParam {
         let mut primitive_state = get_default_primitive_state();
         primitive_state.cull_mode = None;
 
-        let submesh = Submesh::new(0, indexes.len() as u32, 0, primitive_state, InstShaderType::OutlineBox); // 0
+        let submesh = Submesh::new(0, indexes.len() as u32, 0, primitive_state, InstShaderType::Obstacle); // 0
 
         // Create buffers.
 
@@ -131,12 +131,12 @@ impl ModelFactory for OutlineBoxParam {
     }
 
     fn create(self, handle: ModelHandle, _output_device: OutputDeviceRc, _inst_sh_impls: &mut [InstShaderImplType], _ui_manager: UIManagerRc) -> Self::Model {
-        OutlineBox::new(self, handle)
+        Obstacle::new(self, handle)
     }
 }
 
-pub struct OutlineBox {
-    param: OutlineBoxParam,
+pub struct Obstacle {
+    param: ObstacleParam,
     handle: ModelHandle,
     inner: RefCell<Inner>,
 }
@@ -146,8 +146,8 @@ struct Inner {
     pos: Vector3<f32>,
 }
 
-impl OutlineBox {
-    fn new(param: OutlineBoxParam, handle: ModelHandle) -> Self {
+impl Obstacle {
+    fn new(param: ObstacleParam, handle: ModelHandle) -> Self {
         Self {
             param,
             handle,
@@ -171,11 +171,11 @@ impl OutlineBox {
     }
 }
 
-impl Model for OutlineBox {
-    fn fill_outlinebox(&self, inst_index: u32) -> InstOutlineBoxBuf {
+impl Model for Obstacle {
+    fn fill_obstacle(&self, inst_index: u32) -> InstObstacleBuf {
         assert!(inst_index == 0);
 
         let inner = self.inner.borrow();
-        InstOutlineBoxBuf::fill(&self.param.color, self.param.outline_width, &Vector3::new(inner.scale.0, inner.scale.1, inner.scale.2), &Quaternion::one(), &inner.pos)
+        InstObstacleBuf::fill(&self.param.color, self.param.outline_width, &Vector3::new(inner.scale.0, inner.scale.1, inner.scale.2), &Quaternion::one(), &inner.pos)
     }
 }

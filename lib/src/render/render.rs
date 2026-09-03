@@ -173,5 +173,7 @@ impl Render {
                 }
             });
         }
+
+        self.stats.finish();
     }
 }
