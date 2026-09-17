@@ -126,23 +126,21 @@ dependencies = [
 
 [[package]]
 name = "android-activity"
-version = "0.6.0"
+version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ef6978589202a00cd7e118380c448a08b6ed394c3a8df3a430d0898e3a42d046"
+checksum = "0f2a1bb052857d5dd49572219344a7332b31b76405648eabac5bc68978251bcd"
 dependencies = [
  "android-properties",
  "bitflags 2.13.2",
  "cc",
- "cesu8",
- "jni 0.21.1",
- "jni-sys 0.3.1",
+ "jni 0.22.4",
  "libc",
  "log",
  "ndk 0.9.0",
  "ndk-context",
  "ndk-sys 0.6.0+11769913",
  "num_enum",
- "thiserror 1.0.69",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -2148,7 +2146,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9805bcdcbeea6626a0054347ee55d2424e0d5574b563472719d3fc7a11852242"
 dependencies = [
  "android-activity 0.5.2",
- "android-activity 0.6.0",
+ "android-activity 0.6.1",
  "android-build",
  "i-slint-common",
  "i-slint-core",
@@ -4866,7 +4864,7 @@ dependencies = [
 name = "rsaber_android"
 version = "0.6.0"
 dependencies = [
- "android-activity 0.6.0",
+ "android-activity 0.6.1",
  "rsaber_lib",
  "slint",
 ]
@@ -4911,7 +4909,7 @@ dependencies = [
 name = "rsaber_lib"
 version = "0.6.0"
 dependencies = [
- "android-activity 0.6.0",
+ "android-activity 0.6.1",
  "ash",
  "atomic",
  "bytemuck",
@@ -7263,7 +7261,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a6755fa58a9f8350bd1e472d4c3fcc25f824ec358933bba33306d0b63df5978d"
 dependencies = [
  "ahash",
- "android-activity 0.6.0",
+ "android-activity 0.6.1",
  "atomic-waker",
  "bitflags 2.13.2",
  "block2 0.5.1",

@@ -14,7 +14,7 @@ categories.workspace = true
 
 [dependencies]
 
-android-activity = {version = "=0.6.0", features = ["native-activity"]} # TODO: Investigate startup issue with 0.6.1
+android-activity = {version = "=0.6.1", features = ["native-activity"]} # TODO: Investigate startup issue with 0.6.1
 slint = {version = "1.17.0", default-features = false, features = ["backend-android-activity-06"]} # TODO: If this is missing, then slint build fails, why?
 
 rsaber_lib = {path = "../lib", version = "0.6.0", features = ["xr", "xr_loaded"]}
