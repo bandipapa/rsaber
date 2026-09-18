@@ -11,7 +11,8 @@ struct VertexIn {
     // Per-vertex
     @location(0) pos: vec3<f32>,
     // Per-instance
-    @location(12) color: vec3<f32>,
+    @location(11) color: vec3<f32>,
+    @location(12) div: vec2<u32>,
     @location(13) model_scale: vec3<f32>,
     @location(14) model_rot: vec4<f32>,
     @location(15) model_pos: vec3<f32>,
@@ -30,7 +31,7 @@ struct VertexOut {
 
     var out: VertexOut;
     out.pos = uni.view_m[#VIEW_INDEX_VAL#] * vec4(apply_all(pos, in.model_scale, in.model_rot, in.model_pos), 1);
-    out.orig_pos = pos.xy;
+    out.orig_pos = (pos.xy + 0.5) * vec2<f32>(in.div);
     out.color = in.color;
 
     return out;

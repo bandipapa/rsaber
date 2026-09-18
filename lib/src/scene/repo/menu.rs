@@ -697,7 +697,7 @@ impl Menu {
 
         // Setup floor.
 
-        create_floor(&mut model_reg);
+        create_floor(&mut model_reg, 30, 30);
         create_stats_window(&mut model_reg, Arc::clone(&stats), ui_loop);
 
         // Setup sabers.

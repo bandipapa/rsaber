@@ -25,3 +25,7 @@ print_stdout = "warn"
 todo = "warn"
 unimplemented = "warn"
 unreachable = "warn"
+
+[profile.release]
+
+strip = true

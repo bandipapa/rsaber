@@ -24,10 +24,11 @@ const SABER_RAY_PHONG_PARAM: PhongParam = PhongParam::new(1.0, 0.0, 0.0, 0.0);
 
 // Convenience methods used by scenes.
 
-pub fn create_floor(model_reg: &mut ModelRegistry) {
-    let floor_param = FloorParam::new(&COLOR_WHITE);
+pub fn create_floor(model_reg: &mut ModelRegistry, div_x: u32, div_y: u32) {
+    let floor_param = FloorParam::new(&COLOR_WHITE, div_x, div_y);
     let floor = model_reg.create(floor_param);
     floor.set_visible(true);
+    floor.set_scale(div_x as f32, div_y as f32);
     floor.set_pos(&Vector3::zero());
 }
 

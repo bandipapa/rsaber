@@ -391,6 +391,7 @@ impl OutputDevice {
         // - Expose the needed top-level methods of wgpu device/queue, and keep 
         //   wgpu device/queue private.
         // - Cache/deduplicate gpu resources.
+        // TODO: count buffer uploads here and not in modelrenderer?
 
         Self {
             device: device.clone(),

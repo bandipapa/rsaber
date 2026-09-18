@@ -12,14 +12,15 @@ use rsaber_lib::util::Stats;
 fn android_main(app: AndroidApp) {
     let asset_mgr = EmbedAssetManager::new();
 
-    let xr_entry = unsafe { openxr::Entry::load() }.expect("Unable to load OpenXR");
-    xr_entry.initialize_android_loader().expect("Unable to initialize android loader");
-
     // At the moment, use precompiled dynamic loader for OpenXR.
     // TODO: How to build it with cross-compiler?
+
+    let xr_platform_info = unsafe { openxr::AndroidPlatformInfo::new(app.vm_as_ptr(), app.activity_as_ptr()) };
+    let xr_entry = unsafe { openxr::Entry::load(&xr_platform_info) }.expect("Unable to load OpenXR");
+    let output = XROutput::new(xr_entry, &xr_platform_info);
     
-    let output = XROutput::new(xr_entry);
     let stats = Stats::new("");
+
     let main = Main::new(asset_mgr, output.get_output_device(), stats);
     main.configure(output.get_width(), output.get_height());
 

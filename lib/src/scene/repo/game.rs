@@ -14,15 +14,15 @@ use crate::output::OutputDeviceRc;
 use crate::render::{RenderGraph, RenderGraphBuilder, RenderNodeInOut};
 use crate::render::model::*;
 use crate::scene::{MenuParam, Scene, SceneFactory, SceneInput, SceneManager, ScenePose, create_floor, create_saber, create_stats_window};
-use crate::songinfo::{NoteCutDir, NoteType, SongInfo};
+use crate::songinfo::{NoteCutDir, NoteType, ObstacleDepth, SongInfo};
 use crate::ui::{GameStatsWindow, UILoop, UIManagerRc};
 use crate::ui::slintimpl;
 use crate::util::StatsRc;
 
-const CELL_SIZE: f32 = 0.5; // [m]
-const CELL_SPACING: f32 = 0.10; // [m]
+const GRID_SIZE: f32 = 0.6; // [m]
+const OBJ_SIZE: f32 = 0.5; // [m]
 const CUBE_BOMB_FLOOR: f32 = 0.6; // [m]
-const OBSTACLE_FLOOR: f32 = 0.3; // [m]
+const OBSTACLE_FLOOR: f32 = 0.1; // [m]
 
 const OFFSET_Y: f32 = 1.0; // When ts == obj.ts, then distance between the player and the front side of the object [m]
 
@@ -35,10 +35,12 @@ const ZONE_IN2_DIST: f32 = 10.0; // [m]
 const ZONE_IN3_DIST: f32 = 10.0; // [m]
 const ZONE_OUT_DIST: f32 = 15.0; // [m]
 
-const G: f32 = 9.8; // [m/s2]
+const OBSTACLE_SPEED_TWEAK: f32 = 5.0;
 
 const BOMB_COLOR: Color = Color([0.5, 0.5, 0.5]);
 const BOMB_PHONG_PARAM: PhongParam = PhongParam::new(0.1, 0.2, 0.3, 64.0);
+
+const G: f32 = 9.8; // [m/s2]
 
 pub struct GameParam {
     asset_mgr: AssetManagerRc,
@@ -71,7 +73,6 @@ impl SceneFactory for GameParam {
 
 pub struct Game {
     ui_loop: UILoop,
-    zone_info: Rc<ZoneInfo>,
     cube_infos: Box<[Rc<CubeInfo>]>,
     obstacle_infos: Box<[Rc<ObstacleInfo>]>,
     bomb_infos: Box<[Rc<BombInfo>]>,
@@ -85,13 +86,16 @@ pub struct Game {
 
 struct ZoneInfo {
     in1_dist: f32,
+    in1_v: f32,
     in2_dist: f32,
+    in2_v: f32,
     in3_dist: f32,
     in3_v: f32,
+    out_dist: f32,
+    out_v: f32,
     in3_t: f32,
     in23_t: f32,
     in123_t: f32,
-    out_v: f32,
     out_t: f32,
 }
 
@@ -104,18 +108,68 @@ enum ZoneInfoState {
 
 impl ZoneInfo {
     #[expect(clippy::too_many_arguments)]
-    fn new(in1_dist: f32, in2_dist: f32, in3_dist: f32, in3_v: f32, in3_t: f32, in23_t: f32, in123_t: f32, out_v: f32, out_t: f32) -> Self {
+    fn new(in1_dist: f32, in1_v: f32, in2_dist: f32, in2_v: f32, in3_dist: f32, in3_v: f32, out_dist: f32, out_v: f32) -> Self {
+        let in1_t = in1_dist / in1_v;
+        let in2_t = in2_dist / in2_v;
+        let in3_t = in3_dist / in3_v;
+        let in23_t = in2_t + in3_t;
+        let in123_t = in1_t + in2_t + in3_t;
+        let out_t = out_dist / out_v;
+
         Self {
             in1_dist,
+            in1_v,
             in2_dist,
+            in2_v,
             in3_dist,
             in3_v,
+            out_dist,
+            out_v,
             in3_t,
             in23_t,
             in123_t,
-            out_v,
             out_t,
         }
+    }
+
+    fn get_in1_dist(&self) -> f32 {
+        self.in1_dist
+    }
+
+    fn get_in1_v(&self) -> f32 {
+        self.in1_v
+    }
+
+    fn get_in2_dist(&self) -> f32 {
+        self.in2_dist
+    }
+
+    fn get_in2_v(&self) -> f32 {
+        self.in2_v
+    }
+
+    fn get_in3_dist(&self) -> f32 {
+        self.in3_dist
+    }
+
+    fn get_in3_v(&self) -> f32 {
+        self.in3_v
+    }
+
+    fn get_out_dist(&self) -> f32 {
+        self.out_dist
+    }
+
+    fn get_out_v(&self) -> f32 {
+        self.out_v
+    }
+
+    fn get_in123_t(&self) -> f32 {
+        self.in123_t
+    }
+
+    fn get_out_t(&self) -> f32 {
+        self.out_t
     }
 
     fn calc<F: FnOnce(ZoneInfoState) -> R, R>(&self, ts: f32, func: F) -> (f32, R) {
@@ -135,6 +189,8 @@ impl ZoneInfo {
 
 struct CubeInfo {
     ts: f32,
+    ts_spawn: f32,
+    zone_info: ZoneInfo,
     x: f32,
     z: f32,
     note_type: NoteType,
@@ -146,15 +202,17 @@ struct CubeInfo {
 struct ObstacleInfo {
     ts_start: f32,
     ts_end: f32,
+    ts_spawn: f32,
+    zone_info: ZoneInfo,
     x: f32,
     z: f32,
-    scale_x: f32,
-    scale_z: f32,
     obstacle: Rc<Obstacle>,
 }
 
 struct BombInfo {
     ts: f32,
+    ts_spawn: f32,
+    zone_info: ZoneInfo,
     x: f32,
     z: f32,
     bomb: Rc<Bomb>,
@@ -216,166 +274,238 @@ impl Game {
         let color_l = color_scheme.get_color_l();
         let color_r = color_scheme.get_color_r();
 
-        // Calculate zone info.
+        // Setup base zone info:
+        // - Individual objects can have their own settings (e.g. speed),
+        //   so zone info is determined and stored for each object.
+        // - Because of bpm map (variable bpm), the exact time interval of
+        //   bpm_offset is depending on the actual bpm.
+        //   TODO: which bpm to consider: bpm_pos + notejump_bpm_offset or
+        //   bpm_pos - notejump_bpm_offset?
+        // - The objects are sorted by ts_spawn to avoid scanning the full
+        //   object list during spawn (see update_objs).
 
         let notejump_speed = beatmap_info.get_notejump_speed();
+        let notejump_bpm_offset = beatmap_info.get_notejump_bpm_offset();
 
-        let in1_dist = ZONE_IN1_DIST;
-        let in1_v = ZONE_IN1_V;
-        let in1_t = in1_dist / in1_v;
-
-        let in2_dist = ZONE_IN2_DIST;
-        let in2_v = notejump_speed;
-        let in2_t = in2_dist / in2_v;
-
-        let in3_dist = ZONE_IN3_DIST;
-        let in3_v = notejump_speed;
-        let in3_t = in3_dist / in3_v;
-
-        let in23_t = in2_t + in3_t;
-        let in123_t = in1_t + in2_t + in3_t;
-
-        let out_dist = ZONE_OUT_DIST;
-        let out_v = notejump_speed;
-        let out_t = out_dist / out_v;
-
-        let zone_info = Rc::new(ZoneInfo::new(
-            in1_dist,
-            in2_dist,
-            in3_dist,
-            in3_v,
-            in3_t,
-            in23_t,
-            in123_t,
-            out_v,
-            out_t,
-        ));
-
-        // Setup cubes.
+        let base_zone_info = ZoneInfo::new(
+            ZONE_IN1_DIST,
+            ZONE_IN1_V,
+            ZONE_IN2_DIST,
+            notejump_speed,
+            ZONE_IN3_DIST,
+            notejump_speed,
+            ZONE_OUT_DIST,
+            notejump_speed
+        );
 
         let bpm_info = song_info.get_bpm_info().map_err(|e| format!("Unable to load bpm info: {:?}", e))?; // TODO: instead of debug, use display trait for formatting error msg?
+        let beatmap = beatmap_info.load().map_err(|e| format!("Unable to load beatmap: {:?}", e))?; // TODO: instead of debug, use display trait for formatting error msg?
+
+        // Setup cubes.
+        // TODO: instead of creating model object for each note/obstacle/bomb, calculate the upper
+        // limit of visible objects, so we can pool and reuse them -> smaller GPU buffers are needed.
 
         let body_phong_param = PhongParam::new(0.1, 0.3, 0.6, 16.0);
         let symbol_phong_param = PhongParam::new(0.5, 0.3, 0.6, 16.0);
 
-        let beatmap = beatmap_info.load().map_err(|e| format!("Unable to load beatmap: {:?}", e))?; // TODO: instead of debug, use display trait for formatting error msg?
-
-        let cube_infos = Box::from_iter(beatmap.get_notes().iter().filter_map(|note_data| {
+        let mut cube_infos = Box::from_iter(beatmap.get_notes().iter().filter_map(|note_data| {
             let bpm_pos = note_data.get_bpm_pos();
 
-            if let Some(ts) = bpm_info.get_ts(bpm_pos) {
-                let note_type = note_data.get_note_type();
-                let mut any = false;
-                let mut symbol = CubeSymbol::Arrow;
+            let ts = match bpm_info.get_ts(bpm_pos) {
+                Some(ts) => ts,
+                None => return None,
+            };
 
-                let angle = match note_data.get_cut_dir() {
-                    NoteCutDir::Up => match note_type {
-                        NoteType::Left => -180.0,
-                        NoteType::Right => 180.0,
-                    },
-                    NoteCutDir::Down => 0.0,
-                    NoteCutDir::Left => 90.0,
-                    NoteCutDir::Right => -90.0,
-                    NoteCutDir::UpLeft => 135.0,
-                    NoteCutDir::UpRight => -135.0,
-                    NoteCutDir::DownLeft => 45.0,
-                    NoteCutDir::DownRight => -45.0,
-                    NoteCutDir::Any => {
-                        any = true;
-                        symbol = CubeSymbol::Dot;
-                        0.0
-                    }
-                };
+            let ts_notejump = match bpm_info.get_ts(bpm_pos + note_data.get_notejump_bpm_offset_opt().unwrap_or(notejump_bpm_offset)) {
+                Some(ts_notejump) => ts_notejump,
+                None => return None,
+            };
 
-                let color = match note_type {
+            let in23_out_v = note_data.get_notejump_speed_opt().unwrap_or(notejump_speed);
+            let zone_info = Self::calc_zone_info(&base_zone_info, in23_out_v, ts_notejump - ts);
+            let ts_spawn = ts - zone_info.get_in123_t();
+
+            let note_type = note_data.get_note_type();
+            let mut any = false;
+            let mut symbol = CubeSymbol::Arrow;
+
+            let angle = match note_data.get_cut_dir() {
+                NoteCutDir::Up => match note_type {
+                    NoteType::Left => -180.0,
+                    NoteType::Right => 180.0,
+                },
+                NoteCutDir::Down => 0.0,
+                NoteCutDir::Left => 90.0,
+                NoteCutDir::Right => -90.0,
+                NoteCutDir::UpLeft => 135.0,
+                NoteCutDir::UpRight => -135.0,
+                NoteCutDir::DownLeft => 45.0,
+                NoteCutDir::DownRight => -45.0,
+                NoteCutDir::Any => {
+                    any = true;
+                    symbol = CubeSymbol::Dot;
+                    0.0
+                }
+            };
+
+            let color = match note_data.get_color_opt() {
+                Some(color) => color,
+                None => match note_type {
                     NoteType::Left => color_l,
                     NoteType::Right => color_r,
-                };
+                },
+            };
 
-                let cube_param = CubeParam::new(symbol, color, &body_phong_param, &COLOR_WHITE, &symbol_phong_param);
-                let cube = model_reg.create(cube_param);
-                cube.set_scale(CELL_SIZE);
+            let cube_param = CubeParam::new(symbol, color, &body_phong_param, &COLOR_WHITE, &symbol_phong_param);
+            let cube = model_reg.create(cube_param);
+            cube.set_scale(OBJ_SIZE);
 
-                // Cube bounding box is unit (1m) sized and the object center is at the origin.
+            let (x, z) = Self::calc_xz_center(note_data.get_x(), note_data.get_y());
 
-                let (x, z) = Self::calc_xz(note_data.get_x(), note_data.get_y());
+            let cube_info = Rc::new(CubeInfo {
+                ts,
+                ts_spawn,
+                zone_info,
+                x,
+                z,
+                note_type,
+                angle,
+                any,
+                cube,
+            });
 
-                let cube_info = Rc::new(CubeInfo {
-                    ts,
-                    x,
-                    z,
-                    note_type,
-                    angle,
-                    any,
-                    cube,
-                });
-
-                Some(cube_info)
-            } else {
-                None
-            }
+            Some(cube_info)
         }));
 
-        let obstacle_infos = Box::from_iter(beatmap.get_obstacles().iter().filter_map(|obstacle_data| {
+        cube_infos.sort_by(|cube_info1, cube_info2| cube_info1.ts_spawn.partial_cmp(&cube_info2.ts_spawn).expect("Unable to compare"));
+
+        // Setup obstacles.
+
+        let mut obstacle_infos = Box::from_iter(beatmap.get_obstacles().iter().filter_map(|obstacle_data| {
             let bpm_pos = obstacle_data.get_bpm_pos();
-            let duration = obstacle_data.get_duration();
 
-            if let Some(ts_start) = bpm_info.get_ts(bpm_pos) &&
-               let Some(ts_end) = bpm_info.get_ts(bpm_pos + duration) {
-                // Obstacle bounding box is unit (1m) sized and the object center is at the origin.
+            let ts_start = match bpm_info.get_ts(bpm_pos) {
+                Some(ts_start) => ts_start,
+                None => return None,
+            };
 
-                let (start_x, start_z) = Self::calc_xz(obstacle_data.get_x(), obstacle_data.get_y());
-                let (end_x, end_z) = Self::calc_xz(obstacle_data.get_x() + obstacle_data.get_width() - 1, obstacle_data.get_y() + obstacle_data.get_height() - 1);
+            let ts_notejump = match bpm_info.get_ts(bpm_pos + obstacle_data.get_notejump_bpm_offset_opt().unwrap_or(notejump_bpm_offset)) {
+                Some(ts_notejump) => ts_notejump,
+                None => return None,
+            };
 
-                let x = (end_x + start_x) / 2.0;
-                let z = (end_z + start_z) / 2.0 + OBSTACLE_FLOOR;
+            let in23_out_v = obstacle_data.get_notejump_speed_opt().unwrap_or(notejump_speed);
+            let mut zone_info = Self::calc_zone_info(&base_zone_info, in23_out_v, ts_notejump - ts_start);
 
-                let scale_x = end_x - start_x + CELL_SIZE;
-                let scale_z = end_z - start_z + CELL_SIZE;
+            if obstacle_data.get_fast() {
+                // TODO: OBSTACLE_SPEED_TWEAK: What is the correct formula for tweaking speed
+                // in case of negative duration (fast/hyper walls)?
 
-                let obstacle_param = ObstacleParam::new(color_scheme.get_obstacle(), OUTLINE_WIDTH);
-                let obstacle = model_reg.create(obstacle_param);
-
-                let obstacle_info = Rc::new(ObstacleInfo {
-                    ts_start,
-                    ts_end,
-                    x,
-                    z,
-                    scale_x,
-                    scale_z,
-                    obstacle,
-                });
-
-                Some(obstacle_info)
-            } else {
-                None
+                zone_info = ZoneInfo::new(
+                    zone_info.get_in1_dist(),
+                    zone_info.get_in1_v(),
+                    zone_info.get_in2_dist(),
+                    zone_info.get_in2_v() * OBSTACLE_SPEED_TWEAK,
+                    zone_info.get_in3_dist(),
+                    zone_info.get_in3_v() * OBSTACLE_SPEED_TWEAK,
+                    zone_info.get_out_dist(),
+                    zone_info.get_out_v() * OBSTACLE_SPEED_TWEAK
+                );
             }
+            
+            let ts_spawn = ts_start - zone_info.get_in123_t(); // TODO: Do we need to tweak ts_spawn because of scaling/rotation?
+
+            let x = (2.0 * obstacle_data.get_x() + obstacle_data.get_width()) * GRID_SIZE / 2.0;
+            let z = obstacle_data.get_y() * GRID_SIZE + OBSTACLE_FLOOR;
+
+            let scale_x = obstacle_data.get_width() * GRID_SIZE;
+            let scale_y = match obstacle_data.get_depth() {
+                ObstacleDepth::Duration(duration) => {
+                    let ts_end = match bpm_info.get_ts(bpm_pos + duration) {
+                        Some(ts_end) => ts_end,
+                        None => return None,
+                    };
+
+                    (ts_end - ts_start) * in23_out_v
+                },
+                ObstacleDepth::Scale(scale) => {
+                    scale * GRID_SIZE
+                },
+            };
+            let scale_z = obstacle_data.get_height() * GRID_SIZE;
+
+            let color = match obstacle_data.get_color_opt() {
+                Some(color) => color,
+                None => color_scheme.get_obstacle(),
+            };
+
+            let obstacle_param = ObstacleParam::new(color, OUTLINE_WIDTH);
+            let obstacle = model_reg.create(obstacle_param);
+
+            obstacle.set_scale(scale_x, scale_y, scale_z);
+
+            if let Some(rot) = obstacle_data.get_rot_opt() {
+                obstacle.set_rot(rot);
+            }
+
+            // Determine the timestamp, when the back side is reaching the player. Make sure
+            // that the position is initial when calling calc_box().
+
+            let (_, box_max) = obstacle.calc_box();
+            let ts_end = ts_start + box_max.y / zone_info.get_out_v();
+
+            let obstacle_info = Rc::new(ObstacleInfo {
+                ts_start,
+                ts_end,
+                ts_spawn,
+                zone_info,
+                x,
+                z,
+                obstacle,
+            });
+
+            Some(obstacle_info)
         }));
 
-        let bomb_infos = Box::from_iter(beatmap.get_bombs().iter().filter_map(|bomb_data| {
+        obstacle_infos.sort_by(|obstacle_info1, obstacle_info2| obstacle_info1.ts_spawn.partial_cmp(&obstacle_info2.ts_spawn).expect("Unable to compare"));
+
+        // Setup bombs.
+
+        let mut bomb_infos = Box::from_iter(beatmap.get_bombs().iter().filter_map(|bomb_data| {
             let bpm_pos = bomb_data.get_bpm_pos();
 
-            if let Some(ts) = bpm_info.get_ts(bpm_pos) {
-                let bomb_param = BombParam::new(&BOMB_COLOR, &BOMB_PHONG_PARAM);
-                let bomb = model_reg.create(bomb_param);
-                bomb.set_scale(CELL_SIZE);
+            let ts = match bpm_info.get_ts(bpm_pos) {
+                Some(ts) => ts,
+                None => return None,
+            };
 
-                // Bomb bounding box is unit (1m) sized and the object center is at the origin.
+            let ts_notejump = match bpm_info.get_ts(bpm_pos + notejump_bpm_offset) {
+                Some(ts_notejump) => ts_notejump,
+                None => return None,
+            };
 
-                let (x, z) = Self::calc_xz(bomb_data.get_x(), bomb_data.get_y());
+            let zone_info = Self::calc_zone_info(&base_zone_info, notejump_speed, ts_notejump - ts);
+            let ts_spawn = ts - zone_info.get_in123_t();
 
-                let bomb_info = Rc::new(BombInfo {
-                    ts,
-                    x,
-                    z,
-                    bomb,
-                });
+            let bomb_param = BombParam::new(&BOMB_COLOR, &BOMB_PHONG_PARAM);
+            let bomb = model_reg.create(bomb_param);
+            bomb.set_scale(OBJ_SIZE);
 
-                Some(bomb_info)
-            } else {
-                None
-            }
+            let (x, z) = Self::calc_xz_center(bomb_data.get_x(), bomb_data.get_y());
+
+            let bomb_info = Rc::new(BombInfo {
+                ts,
+                ts_spawn,
+                zone_info,
+                x,
+                z,
+                bomb,
+            });
+
+            Some(bomb_info)
         }));
+
+        bomb_infos.sort_by(|bomb_info1, bomb_info2| bomb_info1.ts_spawn.partial_cmp(&bomb_info2.ts_spawn).expect("Unable to compare"));
 
         // Setup stat window.
 
@@ -392,8 +522,15 @@ impl Game {
         let game_stats_window_weak = game_stats_window.as_weak();
 
         // Setup floor.
+        // TODO: This is not correct, just a quick hack to make wallmaps look good.
 
-        create_floor(&mut model_reg);
+        let (div_x, div_y) = if beatmap_info.get_env_removal().is_empty() {
+            (30, 30)
+        } else {
+            (6, 6)
+        };
+        
+        create_floor(&mut model_reg, div_x, div_y);
         create_stats_window(&mut model_reg, Arc::clone(&stats), ui_loop);
 
         // Setup sabers.
@@ -412,11 +549,13 @@ impl Game {
 
         // Setup audio.
 
-        #[expect(unused_mut)]
-        let mut test = false;
-        #[cfg(feature = "test")]
-        {
-            test = param.test;
+        cfg_select! {
+            feature = "test" => {
+                let test = param.test;
+            },
+            _ => {
+                let test = false;
+            },
         }
 
         let audio_info_opt = if !test {
@@ -450,7 +589,6 @@ impl Game {
         
         Ok(Self {
             ui_loop: ui_loop.clone(),
-            zone_info,
             cube_infos,
             obstacle_infos,
             bomb_infos,
@@ -468,9 +606,6 @@ impl Game {
 
         // Spawn incoming objects.
 
-        let zone_info = &self.zone_info;
-        let ts_in = audio_ts + zone_info.in123_t;
-
         let cube_infos = &self.cube_infos;
         let cube_range_end = &mut inner.cube_range_end;
 
@@ -486,8 +621,8 @@ impl Game {
             for i in *cube_range_end..cube_infos.len() {
                 let cube_info = &cube_infos[i];
 
-                if cube_info.ts <= ts_in {
-                    let obj = CubeObj::new(Rc::clone(zone_info), Rc::clone(cube_info), #[cfg(feature = "test")] false);
+                if cube_info.ts_spawn <= audio_ts {
+                    let obj = CubeObj::new(Rc::clone(cube_info), #[cfg(feature = "test")] false);
                     alive_objs.push(Box::new(obj));
 
                     *cube_range_end = i + 1;
@@ -501,8 +636,8 @@ impl Game {
             for i in *obstacle_range_end..obstacle_infos.len() {
                 let obstacle_info = &obstacle_infos[i];
 
-                if obstacle_info.ts_start <= ts_in {
-                    let obj = ObstacleObj::new(Rc::clone(zone_info), Rc::clone(obstacle_info), #[cfg(feature = "test")] false);
+                if obstacle_info.ts_spawn <= audio_ts {
+                    let obj = ObstacleObj::new(Rc::clone(obstacle_info), #[cfg(feature = "test")] false);
                     alive_objs.push(Box::new(obj));
 
                     *obstacle_range_end = i + 1;
@@ -516,8 +651,8 @@ impl Game {
             for i in *bomb_range_end..bomb_infos.len() {
                 let bomb_info = &bomb_infos[i];
 
-                if bomb_info.ts <= ts_in {
-                    let obj = BombObj::new(Rc::clone(zone_info), Rc::clone(bomb_info), #[cfg(feature = "test")] false);
+                if bomb_info.ts_spawn <= audio_ts {
+                    let obj = BombObj::new(Rc::clone(bomb_info), #[cfg(feature = "test")] false);
                     alive_objs.push(Box::new(obj));
 
                     *bomb_range_end = i + 1;
@@ -547,7 +682,7 @@ impl Game {
                 if count_info.cube == 0 && *cube_range_end < cube_infos.len() {
                     let cube_info = &cube_infos[*cube_range_end];
 
-                    let obj = CubeObj::new(Rc::clone(zone_info), Rc::clone(cube_info), true);
+                    let obj = CubeObj::new(Rc::clone(cube_info), true);
                     alive_objs.push(Box::new(obj));
 
                     *cube_range_end += 1;
@@ -558,7 +693,7 @@ impl Game {
                 if count_info.obstacle == 0 && *obstacle_range_end < obstacle_infos.len() {
                     let obstacle_info = &obstacle_infos[*obstacle_range_end];
 
-                    let obj = ObstacleObj::new(Rc::clone(zone_info), Rc::clone(obstacle_info), true);
+                    let obj = ObstacleObj::new(Rc::clone(obstacle_info), true);
                     alive_objs.push(Box::new(obj));
 
                     *obstacle_range_end += 1;
@@ -569,7 +704,7 @@ impl Game {
                 if count_info.bomb == 0 && *bomb_range_end < bomb_infos.len() {
                     let bomb_info = &bomb_infos[*bomb_range_end];
 
-                    let obj = BombObj::new(Rc::clone(zone_info), Rc::clone(bomb_info), true);
+                    let obj = BombObj::new(Rc::clone(bomb_info), true);
                     alive_objs.push(Box::new(obj));
 
                     *bomb_range_end += 1;
@@ -623,6 +758,39 @@ impl Game {
         *prev_audio_ts = audio_ts;
     }
 
+    fn calc_zone_info(base_zone_info: &ZoneInfo, in23_out_v: f32, in23_t_offset: f32) -> ZoneInfo {
+        // If in23_t_offset > 0, then:
+        // - Enlarge zone 2 and 3.
+        // - Shorten zone 1 to compensate for distance difference.
+        // TODO: Clamp values to prevent incorrect geometry.
+
+        let in23_t_offset_half = in23_t_offset / 2.0;
+
+        let in2_dist_diff = in23_out_v * in23_t_offset_half;
+        let in3_dist_diff = in23_out_v * in23_t_offset_half;
+        let in1_dist_diff = -(in2_dist_diff + in3_dist_diff);
+
+        ZoneInfo::new(
+            base_zone_info.get_in1_dist() + in1_dist_diff,
+            base_zone_info.get_in1_v(),
+            base_zone_info.get_in2_dist() + in2_dist_diff,
+            in23_out_v,
+            base_zone_info.get_in3_dist() + in3_dist_diff,
+            in23_out_v,
+            base_zone_info.get_out_dist(),
+            in23_out_v
+        )
+    }
+
+    fn calc_xz_center(x_val: f32, y_val: f32) -> (f32, f32) {
+        // Calculate position on the grid.
+
+        let x = (x_val + 0.5) * GRID_SIZE;
+        let z = (y_val + 0.5) * GRID_SIZE;
+
+        (x, z)
+    }
+
     fn update_saber(saber: &Saber, pose_opt: &Option<&dyn ScenePose>) {
         if let Some(pose) = pose_opt && pose.get_render() {
             saber.set_visible(SaberVisibility::HandleRay);
@@ -631,19 +799,6 @@ impl Game {
         } else {
             saber.set_visible(SaberVisibility::Hidden);
         }
-    }
-
-    fn calc_xz(x_val: u8, y_val: u8) -> (f32, f32) {
-        // Calculate center.
-
-        let x_val = x_val as f32;
-        let (x_index, right) = if x_val >= 2.0 { (x_val - 2.0, 1.0) } else { (1.0 - x_val, -1.0) };
-        let x = right * (CELL_SPACING / 2.0 + x_index * (CELL_SIZE + CELL_SPACING) + CELL_SIZE / 2.0);
-
-        let y_val = y_val as f32;
-        let z = y_val * (CELL_SIZE + CELL_SPACING) + CELL_SIZE / 2.0;
-
-        (x, z)
     }
 }
 
@@ -717,7 +872,6 @@ impl Scene for Game {
 }
 
 struct CubeObj {
-    zone_info: Rc<ZoneInfo>,
     cube_info: Rc<CubeInfo>,
     sliced_status: SlicedStatus,
     #[cfg(feature = "test")]
@@ -732,11 +886,10 @@ enum SlicedStatus {
 }
 
 impl CubeObj {
-    fn new(zone_info: Rc<ZoneInfo>, cube_info: Rc<CubeInfo>, #[cfg(feature = "test")] test: bool) -> Self {
+    fn new(cube_info: Rc<CubeInfo>, #[cfg(feature = "test")] test: bool) -> Self {
         cube_info.cube.set_visible(true);
 
         Self {
-            zone_info,
             cube_info,
             sliced_status: SlicedStatus::WaitForAbove,
             #[cfg(feature = "test")]
@@ -750,15 +903,15 @@ impl CubeObj {
         let saber_len = SABER_DIR.magnitude();
 
         let d = cube_pos - pose.get_pos();
-        if d.magnitude() > saber_len + 3.0_f32.sqrt() * (CELL_SIZE / 2.0) { // TODO: precalculate sqrt(3)?
+        if d.magnitude() > saber_len + 3.0_f32.sqrt() * (OBJ_SIZE / 2.0) { // TODO: precalculate sqrt(3)?
             return None;
         }
 
         // Define hitbox. If changed, then short circuit (see above) needs to be adjusted as well.
 
-        let x_range = -(CELL_SIZE / 2.0)..=(CELL_SIZE / 2.0);
-        let y_range = -(CELL_SIZE / 2.0)..=(CELL_SIZE / 2.0);
-        let z_range = -(CELL_SIZE / 2.0)..=(CELL_SIZE / 2.0);
+        let x_range = -(OBJ_SIZE / 2.0)..=(OBJ_SIZE / 2.0);
+        let y_range = -(OBJ_SIZE / 2.0)..=(OBJ_SIZE / 2.0);
+        let z_range = -(OBJ_SIZE / 2.0)..=(OBJ_SIZE / 2.0);
 
         // Calculate the shortest length of saber which just intersects the cube.
         // TODO: faster implementation?
@@ -819,7 +972,7 @@ impl CubeObj {
                 }
             },
             SlicedStatus::WaitForBelow(len, z) => {
-                if z - calc_z(len) >= CELL_SIZE / 4.0 {
+                if z - calc_z(len) >= OBJ_SIZE / 4.0 {
                     new_sliced_status = SlicedStatus::AtBelow;
                 }
             },
@@ -839,20 +992,22 @@ impl CubeObj {
 
 impl Obj for CubeObj {
     fn update(&mut self, audio_ts: f32, _ts_diff: f32, scene_input: &SceneInput, game_stats: &mut GameStats) -> UpdateResult {
-        #[expect(unused_mut)]
-        let mut test = false;
-        #[cfg(feature = "test")]
-        {
-            test = self.test;
+        cfg_select! {
+            feature = "test" => {
+                let test = self.test;
+            },
+            _ => {
+                let test = false;
+            },
         }
 
         // Hide outgoing cube.
 
-        let zone_info = &self.zone_info;
         let cube_info = &self.cube_info;
+        let zone_info = &cube_info.zone_info;
 
         if !test {
-            let ts_out = audio_ts - zone_info.out_t;
+            let ts_out = audio_ts - zone_info.get_out_t();
 
             if cube_info.ts < ts_out {
                 cube_info.cube.set_visible(false);
@@ -875,7 +1030,7 @@ impl Obj for CubeObj {
             }
         });
 
-        let pos = Vector3::new(cube_info.x, y + CELL_SIZE / 2.0 + OFFSET_Y, cube_info.z + z_base); // TODO: ts_in/ts_out should be offseted because of OFFSET_Y.
+        let pos = Vector3::new(cube_info.x, y + OBJ_SIZE / 2.0 + OFFSET_Y, cube_info.z + z_base); // TODO: ts_in/ts_out should be offseted because of OFFSET_Y.
         cube_info.cube.set_pos(&pos);
 
         let rot = Quaternion::from_angle_y(Deg(angle));
@@ -979,7 +1134,7 @@ impl Obj for CubeSlicedObj {
         self.v.z -= G * ts_diff;
         self.pos += self.v * ts_diff;
 
-        let visible = self.pos.z > -CELL_SIZE; // Should be enough.
+        let visible = self.pos.z > -OBJ_SIZE; // Should be enough.
         let rot = Quaternion::from_angle_y(Deg(cube_info.angle)) * Quaternion::from_axis_angle(self.rot_axis, Deg(self.rot_angle) * self.ts_diff_acc); // TODO: Calculate rot from previous rot + delta (like self.pos)?
 
         if !self.right {
@@ -1012,18 +1167,16 @@ impl Obj for CubeSlicedObj {
 }
 
 struct ObstacleObj {
-    zone_info: Rc<ZoneInfo>,
     obstacle_info: Rc<ObstacleInfo>,
     #[cfg(feature = "test")]
     test: bool,
 }
 
 impl ObstacleObj {
-    fn new(zone_info: Rc<ZoneInfo>, obstacle_info: Rc<ObstacleInfo>, #[cfg(feature = "test")] test: bool) -> Self {
+    fn new(obstacle_info: Rc<ObstacleInfo>, #[cfg(feature = "test")] test: bool) -> Self {
         obstacle_info.obstacle.set_visible(true);
 
         Self {
-            zone_info,
             obstacle_info,
             #[cfg(feature = "test")]
             test,
@@ -1033,20 +1186,22 @@ impl ObstacleObj {
 
 impl Obj for ObstacleObj {
     fn update(&mut self, audio_ts: f32, _ts_diff: f32, _scene_input: &SceneInput, _game_stats: &mut GameStats) -> UpdateResult {
-        #[expect(unused_mut)]
-        let mut test = false;
-        #[cfg(feature = "test")]
-        {
-            test = self.test;
+        cfg_select! {
+            feature = "test" => {
+                let test = self.test;
+            },
+            _ => {
+                let test = false;
+            },
         }
 
         // Hide outgoing obstacle.
 
-        let zone_info = &self.zone_info;
         let obstacle_info = &self.obstacle_info;
+        let zone_info = &obstacle_info.zone_info;
 
         if !test {
-            let ts_out = audio_ts - zone_info.out_t;
+            let ts_out = audio_ts - zone_info.get_out_t();
 
             if obstacle_info.ts_end < ts_out {
                 obstacle_info.obstacle.set_visible(false);
@@ -1054,21 +1209,13 @@ impl Obj for ObstacleObj {
             }
         }
 
-        // Update position & scale. Scale needs to be updated as well,
-        // since the obstacle front and back can have different speeds
-        // depending on their position.
+        // Update position.
 
         let ts_start = if !test { obstacle_info.ts_start - audio_ts } else { 0.0 };
-        let ts_end = if !test { obstacle_info.ts_end - audio_ts } else { 2.0 };
+        let (y, _) = zone_info.calc(ts_start, |_| {});
 
-        let (start_y, _) = zone_info.calc(ts_start, |_| {});
-        let (end_y, _) = zone_info.calc(ts_end, |_| {});
-
-        let scale_y = end_y - start_y;
-        let y = (end_y + start_y) / 2.0 + OFFSET_Y;
-
-        obstacle_info.obstacle.set_scale(obstacle_info.scale_x, scale_y, obstacle_info.scale_z);
-        obstacle_info.obstacle.set_pos(&Vector3::new(obstacle_info.x, y, obstacle_info.z));
+        let pos = Vector3::new(obstacle_info.x, y + OFFSET_Y, obstacle_info.z);
+        obstacle_info.obstacle.set_pos(&pos);
         
         UpdateResult::Keep
     }
@@ -1080,18 +1227,16 @@ impl Obj for ObstacleObj {
 }
 
 struct BombObj {
-    zone_info: Rc<ZoneInfo>,
     bomb_info: Rc<BombInfo>,
     #[cfg(feature = "test")]
     test: bool,
 }
 
 impl BombObj {
-    fn new(zone_info: Rc<ZoneInfo>, bomb_info: Rc<BombInfo>, #[cfg(feature = "test")] test: bool) -> Self {
+    fn new(bomb_info: Rc<BombInfo>, #[cfg(feature = "test")] test: bool) -> Self {
         bomb_info.bomb.set_visible(true);
 
         Self {
-            zone_info,
             bomb_info,
             #[cfg(feature = "test")]
             test,
@@ -1104,7 +1249,7 @@ impl BombObj {
         let saber_len = SABER_DIR.magnitude();
 
         let d = bomb_pos - pose.get_pos();
-        if d.magnitude() > saber_len + CELL_SIZE / 2.0 {
+        if d.magnitude() > saber_len + OBJ_SIZE / 2.0 {
             return false;
         }
 
@@ -1118,7 +1263,7 @@ impl BombObj {
         let e = saber_pos - *bomb_pos;
         let a = saber_dir.dot(saber_dir);
         let b = 2.0 * e.dot(saber_dir);
-        let c = e.dot(e) - (CELL_SIZE / 2.0).powi(2);
+        let c = e.dot(e) - (OBJ_SIZE / 2.0).powi(2);
 
         let d = b.powi(2) - 4.0 * a * c;
         if d < 0.0 {
@@ -1139,20 +1284,22 @@ impl BombObj {
 
 impl Obj for BombObj {
     fn update(&mut self, audio_ts: f32, _ts_diff: f32, scene_input: &SceneInput, game_stats: &mut GameStats) -> UpdateResult {
-        #[expect(unused_mut)]
-        let mut test = false;
-        #[cfg(feature = "test")]
-        {
-            test = self.test;
+        cfg_select! {
+            feature = "test" => {
+                let test = self.test;
+            },
+            _ => {
+                let test = false;
+            },
         }
 
         // Hide outgoing bomb.
 
-        let zone_info = &self.zone_info;
         let bomb_info = &self.bomb_info;
+        let zone_info = &bomb_info.zone_info;
 
         if !test {
-            let ts_out = audio_ts - zone_info.out_t;
+            let ts_out = audio_ts - zone_info.get_out_t();
 
             if bomb_info.ts < ts_out {
                 bomb_info.bomb.set_visible(false);
@@ -1173,7 +1320,7 @@ impl Obj for BombObj {
             }
         });
 
-        let pos = Vector3::new(bomb_info.x, y + CELL_SIZE / 2.0 + OFFSET_Y, bomb_info.z + z_base); // TODO: ts_in/ts_out should be offseted because of OFFSET_Y.
+        let pos = Vector3::new(bomb_info.x, y + OBJ_SIZE / 2.0 + OFFSET_Y, bomb_info.z + z_base); // TODO: ts_in/ts_out should be offseted because of OFFSET_Y.
         bomb_info.bomb.set_pos(&pos);
 
         // Do hit detection.
@@ -1226,7 +1373,7 @@ impl Obj for BombSlicedObj {
         self.v.z -= G * ts_diff;
         self.pos += self.v * ts_diff;
 
-        let visible = self.pos.z > -CELL_SIZE; // Should be enough.
+        let visible = self.pos.z > -OBJ_SIZE; // Should be enough.
 
         if visible {
             bomb_info.bomb.set_pos(&self.pos);

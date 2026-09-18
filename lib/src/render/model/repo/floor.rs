@@ -9,16 +9,20 @@ use crate::output::OutputDeviceRc;
 use crate::render::model::{Color, InstGridBuf, InstShaderImplType, InstShaderType, Mesh, Model, ModelFactory, ModelHandle, Submesh, VertexPos, VertexShaderType, get_default_primitive_state};
 use crate::ui::UIManagerRc;
 
-const RADIUS: f32 = 15.0; // TODO: make it adjustable via FloorParam?
+const POS: f32 = 0.5;
 
 pub struct FloorParam {
     color: Color,
+    div: (u32, u32),
 }
 
 impl FloorParam {
-    pub fn new(color: &Color) -> Self {
+    pub fn new(color: &Color, div_x: u32, div_y: u32) -> Self {
+        assert!(div_x > 0 && div_y > 0);
+
         Self {
             color: *color,
+            div: (div_x, div_y),
         }
     }    
 }
@@ -30,10 +34,10 @@ impl ModelFactory for FloorParam {
         // We don't have .obj file for floor, calculate mesh.
 
         let vertexes = [
-            VertexPos { pos: [-RADIUS, -RADIUS, 0.0] },
-            VertexPos { pos: [RADIUS, -RADIUS, 0.0] },
-            VertexPos { pos: [-RADIUS, RADIUS, 0.0] },
-            VertexPos { pos: [RADIUS, RADIUS, 0.0] },
+            VertexPos { pos: [-POS, -POS, 0.0] },
+            VertexPos { pos: [POS, -POS, 0.0] },
+            VertexPos { pos: [-POS, POS, 0.0] },
+            VertexPos { pos: [POS, POS, 0.0] },
         ];
 
         let indexes: [u16; 6] = [
@@ -78,6 +82,7 @@ pub struct Floor {
 }
 
 struct Inner {
+    scale: (f32, f32),
     pos: Vector3<f32>,
 }
 
@@ -87,6 +92,7 @@ impl Floor {
             param,
             handle,
             inner: RefCell::new(Inner {
+                scale: (1.0, 1.0),
                 pos: Vector3::zero(),
             }),
         }
@@ -94,6 +100,10 @@ impl Floor {
 
     pub fn set_visible(&self, visible: bool) {
         self.handle.set_visible(0, visible);
+    }
+
+    pub fn set_scale(&self, scale_x: f32, scale_y: f32) {
+        self.inner.borrow_mut().scale = (scale_x, scale_y);
     }
 
     pub fn set_pos(&self, pos: &Vector3<f32>) {
@@ -106,6 +116,6 @@ impl Model for Floor {
         assert!(inst_index == 0);
 
         let inner = self.inner.borrow();
-        InstGridBuf::fill(&self.param.color, &Vector3::new(1.0, 1.0, 1.0), &Quaternion::one(), &inner.pos)
+        InstGridBuf::fill(&self.param.color, &self.param.div, &Vector3::new(inner.scale.0, inner.scale.1, 1.0), &Quaternion::one(), &inner.pos)
     }
 }

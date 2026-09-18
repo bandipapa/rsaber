@@ -68,7 +68,9 @@ impl ApplicationHandler for App {
 
             let window = Arc::new(event_loop.create_window(window_attrs).expect("Unable to create window"));
             let output = WindowOutput::new(InstanceDescriptor::new_with_display_handle(Box::new(event_loop.owned_display_handle())), SurfaceTarget::from(Arc::clone(&window))).block_on();
+
             let stats = Stats::new(COMMENT);
+
             let main = Main::new(self.asset_mgr.take().unwrap(), output.get_output_device(), stats);
 
             self.data = Some(AppData {

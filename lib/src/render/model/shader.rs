@@ -242,8 +242,9 @@ impl InstPhongColorBuf {
     }
 }
 
-const INST_GRID_ATTRS: [VertexAttribute; 4] = vertex_attr_array![ // See vertex shader->@location().
-    12 => Float32x3, // color
+const INST_GRID_ATTRS: [VertexAttribute; 5] = vertex_attr_array![ // See vertex shader->@location().
+    11 => Float32x3, // color
+    12 => Uint32x2, // div
     13 => Float32x3, // model_scale
     14 => Float32x4, // model_rot
     15 => Float32x3, // model_pos
@@ -270,13 +271,15 @@ impl InstGrid {
 #[derive(Copy, Clone, Pod, Zeroable)]
 pub struct InstGridBuf {
     color: Color,
+    div: [u32; 2],
     model_buf: ModelBuf,
 }
 
 impl InstGridBuf {
-    pub fn fill(color: &Color, model_scale: &Vector3<f32>, model_rot: &Quaternion<f32>, model_pos: &Vector3<f32>) -> Self {
+    pub fn fill(color: &Color, div: &(u32, u32), model_scale: &Vector3<f32>, model_rot: &Quaternion<f32>, model_pos: &Vector3<f32>) -> Self {
         Self {
             color: *color,
+            div: [div.0, div.1],
             model_buf: ModelBuf::fill(model_scale, model_rot, model_pos),
         }
     }

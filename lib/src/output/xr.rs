@@ -95,11 +95,12 @@ enum XRHardware {
 }
 
 impl XROutput {
-    pub fn new(xr_entry: openxr::Entry) -> Self {
+    pub fn new<T: openxr::PlatformInfo>(xr_entry: openxr::Entry, xr_platform_info: &T) -> Self {
         // This code is based on:
         // - https://openxr-tutorial.com/index.html
         // - https://github.com/rust-mobile/rust-android-examples/blob/main/na-openxr-wgpu/src/lib.rs
         // - https://github.com/philpax/wgpu-openxr-example
+        // TODO: Implement (Eye-Tracked) Foveated Rendering.
 
         let app_version_major: u8 = APP_VERSION_MAJOR.parse().unwrap();
         let app_version_minor: u8 = APP_VERSION_MINOR.parse().unwrap();
@@ -152,7 +153,7 @@ impl XROutput {
             xr_ext.khr_android_create_instance = true;
         }
 
-        let xr_inst = xr_entry.create_instance(&xr_app_info, &xr_ext, &[]).expect("Unable to create OpenXR instance");
+        let xr_inst = xr_entry.create_instance(&xr_app_info, &xr_ext, &[], xr_platform_info).expect("Unable to create OpenXR instance");
         let xr_system = xr_inst.system(openxr::FormFactor::HEAD_MOUNTED_DISPLAY).expect("OpenXR system() failed, make sure the headset is connected");
 
         // TODO: Use array/hashmap to search for tweaks.
@@ -234,11 +235,13 @@ impl XROutput {
 
         let wgpu_hal_exts: Vec<_> = exts_c.into_iter().map(|s| Box::leak(Box::new(s)).as_c_str()).collect(); // TODO: How to do it without leak?
 
-        #[expect(unused_mut)]
-        let mut android_sdk_version = 0;
-        #[cfg(target_os = "android")]
-        {
-            android_sdk_version = AndroidApp::sdk_version().try_into().unwrap();
+        cfg_select! {
+            target_os = "android" => {
+                let android_sdk_version = AndroidApp::sdk_version().try_into().unwrap();
+            },
+            _ => {
+                let android_sdk_version = 0;
+            },
         }
 
         // Dummy closure is created to hold drop_guard.

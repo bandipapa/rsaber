@@ -12,7 +12,7 @@ Screenshots
 <img src="https://raw.githubusercontent.com/bandipapa/rsaber/refs/tags/v0.6.0/doc/game1.jpg" width="300" height="163">
 <img src="https://raw.githubusercontent.com/bandipapa/rsaber/refs/tags/v0.6.0/doc/game2.jpg" width="300" height="163">
 
-## Supported Devices
+## Platform Support
 
 <table>
   <tr>
@@ -39,7 +39,12 @@ Screenshots
   </tr>
 
   <tr>
-    <td>pcvr</td>
+    <td rowspan="2">pcvr</td>
+    <td>Valve Steam Frame (not tested - experimental build)</td>
+    <td>rsaber_pcvr_linux_arm64</td>
+  </tr>
+
+  <tr>
     <td>Windows (SteamVR/OpenXR): <a href="https://www.playstation.com/en-us/support/hardware/pc-prepare-ps-vr2/">Sony PlayStation VR2</a></td>
     <td>rsaber_pcvr_windows_x64.exe</td>
   </tr>

@@ -1,6 +1,7 @@
 // For format description, see:
 // - https://bsmg.wiki/mapping/map-format.html
 // - https://github.com/Kylemc1413/SongCore/blob/master/README.md
+// - https://heck.aeroluna.dev/items/objects
 // Regarding parsing:
 // - There are lot of maps with invalid (e.g. negative, out of range)
 //   values. To be able to load these maps, we have to use i32 type
@@ -11,6 +12,8 @@
 //   version separately (instead of making these checks in Note struct).
 //   This is to handle different field encodings in the future.
 // TODO: use &refs in #[derive(Deserialize)] structs instead of owned types
+// TODO: provide strict mode to validate maps
+// TODO: check for plugin (e.g. noodle) requirements in Info.dat?
 #![expect(non_camel_case_types)]
 
 use std::fmt::{Formatter, Result as fmt_Result};
@@ -18,6 +21,7 @@ use std::ops::Range;
 use std::result::{Result as result_Result};
 use std::sync::Arc;
 
+use cgmath::{Deg, Quaternion, Rotation3};
 use serde::{Deserialize, Deserializer};
 use serde::de::{Error as de_Error, Visitor};
 use serde_json::{Error as json_Error, Value};
@@ -222,15 +226,16 @@ pub struct BeatmapInfo {
     color_scheme_index_opt: Option<u32>,
     def_color_scheme: ColorScheme,
     filename: String,
-    notejump_speed: f32,
-    notejump_beatoffset: f32,
+    notejump_speed: f32, // [m/s]
+    notejump_bpm_offset: f32, // [bpm]
+    env_removal: Box<[String]>,
     #[cfg(feature = "test")]
     test: bool,
 }
 
 impl BeatmapInfo {
     #[expect(clippy::too_many_arguments)]
-    fn new(asset_mgr: AssetManagerRc, characteristic: String, difficulty: SongDifficulty, mut color_scheme_index_opt: Option<i32>, def_color_scheme: ColorScheme, filename: String, notejump_speed: f32, notejump_beatoffset: f32) -> Self {
+    fn new(asset_mgr: AssetManagerRc, characteristic: String, difficulty: SongDifficulty, mut color_scheme_index_opt: Option<i32>, def_color_scheme: ColorScheme, filename: String, notejump_speed: f32, notejump_bpm_offset: f32, env_removal: Vec<String>) -> Self {
         Self {
             asset_mgr,
             characteristic,
@@ -239,7 +244,8 @@ impl BeatmapInfo {
             def_color_scheme,
             filename,
             notejump_speed,
-            notejump_beatoffset,
+            notejump_bpm_offset,
+            env_removal: env_removal.into_boxed_slice(),
             #[cfg(feature = "test")]
             test: false,
         }
@@ -255,7 +261,8 @@ impl BeatmapInfo {
             def_color_scheme: ColorScheme::default(),
             filename: "filename".to_string(),
             notejump_speed: 1.0,
-            notejump_beatoffset: 0.0,
+            notejump_bpm_offset: 0.0,
+            env_removal: Box::from([]),
             test: true,
         }
     }
@@ -289,9 +296,12 @@ impl BeatmapInfo {
         self.notejump_speed
     }
 
-    #[expect(dead_code)] // TODO: remove dead_code once it is used
-    fn get_notejump_beatoffset(&self) -> f32 {
-        self.notejump_beatoffset
+    pub fn get_notejump_bpm_offset(&self) -> f32 {
+        self.notejump_bpm_offset
+    }
+
+    pub fn get_env_removal(&self) -> &[String] {
+        &self.env_removal
     }
 }
 
@@ -310,7 +320,7 @@ struct SongInfo_V2 {
     bpm: f32, // TODO: validate > 0
 
     #[serde(rename = "_colorSchemes")]
-    color_schemes: Option<Vec<SongInfo_V2_ColorScheme>>,
+    color_schemes_opt: Option<Vec<SongInfo_V2_ColorScheme>>,
 
     #[serde(rename = "_difficultyBeatmapSets")]
     beatmap_info_sets: Vec<SongInfo_V2_BeatmapInfoSet>,
@@ -319,7 +329,7 @@ struct SongInfo_V2 {
 impl SongInfo_V2 {
     fn build(self, asset_mgr: AssetManagerRc) -> Result<SongInfo> {
         let mut color_schemes = Vec::new();
-        if let Some(raw_color_schemes) = self.color_schemes {
+        if let Some(raw_color_schemes) = self.color_schemes_opt {
             for raw_color_scheme in raw_color_schemes {
                 let inner = raw_color_scheme.inner;
                 let color_l = inner.color_l;
@@ -336,22 +346,27 @@ impl SongInfo_V2 {
 
             for raw_beatmap_info in raw_beatmap_info_set.beatmap_infos {
                 let mut def_color_scheme = ColorScheme::default();
+                let mut env_removal_opt = None;
 
-                if let Some(custom_data) = raw_beatmap_info.custom_data {
-                    if let Some(color) = custom_data.color_l {
+                if let Some(custom_data) = raw_beatmap_info.custom_data_opt {
+                    if let Some(color) = custom_data.color_l_opt {
                         def_color_scheme.color_l = Color::from_srgb_float(color.r, color.g, color.b);
                     }
                     
-                    if let Some(color) = custom_data.color_r {
+                    if let Some(color) = custom_data.color_r_opt {
                         def_color_scheme.color_r = Color::from_srgb_float(color.r, color.g, color.b);
                     }
 
-                    if let Some(color) = custom_data.obstacle {
+                    if let Some(color) = custom_data.obstacle_opt {
                         def_color_scheme.obstacle = Color::from_srgb_float(color.r, color.g, color.b);
                     }
+
+                    env_removal_opt = custom_data.env_removal_opt;
                 }
 
-                let beatmap_info = BeatmapInfo::new(Arc::clone(&asset_mgr), characteristic.clone(), raw_beatmap_info.difficulty, raw_beatmap_info.color_scheme_index_opt, def_color_scheme, raw_beatmap_info.filename, raw_beatmap_info.notejump_speed, raw_beatmap_info.notejump_beatoffset);
+                let env_removal = env_removal_opt.unwrap_or_default();
+
+                let beatmap_info = BeatmapInfo::new(Arc::clone(&asset_mgr), characteristic.clone(), raw_beatmap_info.difficulty, raw_beatmap_info.color_scheme_index_opt, def_color_scheme, raw_beatmap_info.filename, raw_beatmap_info.notejump_speed, raw_beatmap_info.notejump_bpm_offset, env_removal);
                 beatmap_infos.push(beatmap_info);
             }
         }
@@ -395,19 +410,21 @@ struct SongInfo_V2_BeatmapInfo {
     #[serde(rename = "_noteJumpMovementSpeed")]
     notejump_speed: f32,
     #[serde(rename = "_noteJumpStartBeatOffset")]
-    notejump_beatoffset: f32,
+    notejump_bpm_offset: f32,
     #[serde(rename = "_customData")]
-    custom_data: Option<SongInfo_V2_BeatmapInfo_CustomData>,
+    custom_data_opt: Option<SongInfo_V2_BeatmapInfo_CustomData>,
 }
 
 #[derive(Deserialize)]
 struct SongInfo_V2_BeatmapInfo_CustomData {
     #[serde(rename = "_colorLeft")]
-    color_l: Option<FloatColor>,
+    color_l_opt: Option<FloatColor>,
     #[serde(rename = "_colorRight")]
-    color_r: Option<FloatColor>,
+    color_r_opt: Option<FloatColor>,
     #[serde(rename = "_obstacleColor")]
-    obstacle: Option<FloatColor>,
+    obstacle_opt: Option<FloatColor>,
+    #[serde(rename = "_environmentRemoval")]
+    env_removal_opt: Option<Vec<String>>,
 }
 
 #[derive(Deserialize)]
@@ -415,23 +432,23 @@ struct SongInfo_V4 {
     song: SongInfo_V4_Song,
     audio: SongInfo_V4_Audio,
     #[serde(rename = "colorSchemes")]
-    color_schemes: Option<Vec<SongInfo_V4_ColorScheme>>,
+    color_schemes_opt: Option<Vec<SongInfo_V4_ColorScheme>>,
     #[serde(rename = "difficultyBeatmaps")]
     beatmap_infos: Vec<SongInfo_V4_BeatmapInfo>,
 }
 
 impl SongInfo_V4 {
     fn build(self, asset_mgr: AssetManagerRc) -> Result<SongInfo> {
-        let bpm_selector = if let Some(filename) = self.audio.bpmmap_filename {
+        let bpm_selector = if let Some(filename) = self.audio.bpmmap_filename_opt {
             BPMSelector::Mapped(filename)
-        } else if let Some(bpm) = self.audio.bpm {
+        } else if let Some(bpm) = self.audio.bpm_opt {
             BPMSelector::Fixed(bpm)
         } else {
             return Err(Error::Build("Either bpm or audioDataFilename is required".to_string()));
         };
 
         let mut color_schemes = Vec::new();
-        if let Some(raw_color_schemes) = self.color_schemes {
+        if let Some(raw_color_schemes) = self.color_schemes_opt {
             for raw_color_scheme in raw_color_schemes {
                 let color_scheme = ColorScheme::new(raw_color_scheme.color_l, raw_color_scheme.color_r, raw_color_scheme.obstacle);
                 color_schemes.push(color_scheme);
@@ -440,7 +457,7 @@ impl SongInfo_V4 {
 
         let mut beatmap_infos = Vec::new();
         for raw_beatmap_info in self.beatmap_infos {
-            let beatmap_info = BeatmapInfo::new(Arc::clone(&asset_mgr), raw_beatmap_info.characteristic, raw_beatmap_info.difficulty, raw_beatmap_info.color_scheme_index_opt, ColorScheme::default(), raw_beatmap_info.filename, raw_beatmap_info.notejump_speed, raw_beatmap_info.notejump_beatoffset);
+            let beatmap_info = BeatmapInfo::new(Arc::clone(&asset_mgr), raw_beatmap_info.characteristic, raw_beatmap_info.difficulty, raw_beatmap_info.color_scheme_index_opt, ColorScheme::default(), raw_beatmap_info.filename, raw_beatmap_info.notejump_speed, raw_beatmap_info.notejump_bpm_offset, Vec::new());
             beatmap_infos.push(beatmap_info);
         }
 
@@ -460,9 +477,10 @@ struct SongInfo_V4_Song {
 struct SongInfo_V4_Audio {
     #[serde(rename = "songFilename")]
     song_filename: String,
-    bpm: Option<f32>, // TODO: validate > 0
+    #[serde(rename = "bpm")]
+    bpm_opt: Option<f32>, // TODO: validate > 0
     #[serde(rename = "audioDataFilename")]
-    bpmmap_filename: Option<String>,
+    bpmmap_filename_opt: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -486,7 +504,7 @@ struct SongInfo_V4_BeatmapInfo {
     #[serde(rename = "noteJumpMovementSpeed")]
     notejump_speed: f32,
     #[serde(rename = "noteJumpStartBeatOffset")]
-    notejump_beatoffset: f32,
+    notejump_bpm_offset: f32,
 }
 
 // BPMMap
@@ -653,21 +671,21 @@ impl Beatmap {
         let mut notes = Vec::new();
 
         for i in 0..TEST_NUM {
-            let note = Note::new(i as f32, 2, 1, NoteType::Right, cut_dir_it.next().unwrap());
+            let note = Note::new(i as f32, 0.0, 1.0, NoteType::Right, cut_dir_it.next().unwrap(), None, None, None);
             notes.push(note);
         }
 
         let mut obstacles = Vec::new();
 
         for i in 0..TEST_NUM {
-            let obstacle = Obstacle::new(i as f32, 0, 1, 1.0, 1, 3);
+            let obstacle = Obstacle::new(i as f32, -2.0, 1.0, 2.0, 2.0, ObstacleDepth::Scale(2.0), false, None, None, None, None);
             obstacles.push(obstacle);
         }
 
         let mut bombs = Vec::new();
 
         for i in 0..TEST_NUM {
-            let bomb = Bomb::new(i as f32, 3, 1);
+            let bomb = Bomb::new(i as f32, 1.0, 1.0);
             bombs.push(bomb);
         }
         
@@ -678,11 +696,7 @@ impl Beatmap {
         })
     }
 
-    fn new(mut notes: Vec<Note>, mut obstacles: Vec<Obstacle>, mut bombs: Vec<Bomb>) -> Self {
-        notes.sort_by(|note1, note2| note1.bpm_pos.partial_cmp(&note2.bpm_pos).expect("Unable to compare"));
-        obstacles.sort_by(|obstacle1, obstacle2| obstacle1.bpm_pos.partial_cmp(&obstacle2.bpm_pos).expect("Unable to compare"));
-        bombs.sort_by(|bomb1, bomb2| bomb1.bpm_pos.partial_cmp(&bomb2.bpm_pos).expect("Unable to compare"));
-
+    fn new(notes: Vec<Note>, obstacles: Vec<Obstacle>, bombs: Vec<Bomb>) -> Self {
         Self {
             notes: notes.into_boxed_slice(),
             obstacles: obstacles.into_boxed_slice(),
@@ -705,10 +719,13 @@ impl Beatmap {
 
 pub struct Note {
     bpm_pos: f32,
-    x: u8,
-    y: u8,
+    x: f32,
+    y: f32,
     note_type: NoteType,
     cut_dir: NoteCutDir,
+    color_opt: Option<Color>,
+    notejump_speed_opt: Option<f32>,
+    notejump_bpm_offset_opt: Option<f32>,
 }
 
 #[derive(Clone, Copy)]
@@ -731,13 +748,17 @@ pub enum NoteCutDir {
 }
 
 impl Note {
-    fn new(bpm_pos: f32, x: u8, y: u8, note_type: NoteType, cut_dir: NoteCutDir) -> Self {
+    #[expect(clippy::too_many_arguments)]
+    fn new(bpm_pos: f32, x: f32, y: f32, note_type: NoteType, cut_dir: NoteCutDir, color_opt: Option<Color>, notejump_speed_opt: Option<f32>, notejump_bpm_offset_opt: Option<f32>) -> Self {
         Self {
             bpm_pos,
             x,
             y,
             note_type,
             cut_dir,
+            color_opt,
+            notejump_speed_opt,
+            notejump_bpm_offset_opt,
         }
     }
 
@@ -745,11 +766,11 @@ impl Note {
         self.bpm_pos
     }
 
-    pub fn get_x(&self) -> u8 {
+    pub fn get_x(&self) -> f32 {
         self.x
     }
 
-    pub fn get_y(&self) -> u8 {
+    pub fn get_y(&self) -> f32 {
         self.y
     }
 
@@ -760,26 +781,55 @@ impl Note {
     pub fn get_cut_dir(&self) -> NoteCutDir {
         self.cut_dir
     }
+
+    pub fn get_color_opt(&self) -> Option<&Color> {
+        self.color_opt.as_ref()
+    }
+
+    pub fn get_notejump_speed_opt(&self) -> Option<f32> {
+        self.notejump_speed_opt
+    }
+
+    pub fn get_notejump_bpm_offset_opt(&self) -> Option<f32> {
+        self.notejump_bpm_offset_opt
+    }
 }
 
 pub struct Obstacle {
     bpm_pos: f32,
-    x: u8,
-    y: u8,
-    duration: f32,
-    width: u8,
-    height: u8,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    depth: ObstacleDepth,
+    fast: bool,
+    rot_opt: Option<Quaternion<f32>>,
+    color_opt: Option<Color>,
+    notejump_speed_opt: Option<f32>,
+    notejump_bpm_offset_opt: Option<f32>,
+}
+
+#[derive(Clone, Copy)]
+pub enum ObstacleDepth {
+    Duration(f32),
+    Scale(f32),
 }
 
 impl Obstacle {
-    fn new(bpm_pos: f32, x: u8, y: u8, duration: f32, width: u8, height: u8) -> Self {
+    #[expect(clippy::too_many_arguments)]
+    fn new(bpm_pos: f32, x: f32, y: f32, width: f32, height: f32, depth: ObstacleDepth, fast: bool, rot_opt: Option<Quaternion<f32>>, color_opt: Option<Color>, notejump_speed_opt: Option<f32>, notejump_bpm_offset_opt: Option<f32>) -> Self {
         Self {
             bpm_pos,
             x,
             y,
-            duration,
             width,
             height,
+            depth,
+            fast,
+            rot_opt,
+            color_opt,
+            notejump_speed_opt,
+            notejump_bpm_offset_opt,
         }
     }
 
@@ -787,35 +837,55 @@ impl Obstacle {
         self.bpm_pos
     }
 
-    pub fn get_x(&self) -> u8 {
+    pub fn get_x(&self) -> f32 {
         self.x
     }
 
-    pub fn get_y(&self) -> u8 {
+    pub fn get_y(&self) -> f32 {
         self.y
     }
 
-    pub fn get_duration(&self) -> f32 {
-        self.duration
-    }
-
-    pub fn get_width(&self) -> u8 {
+    pub fn get_width(&self) -> f32 {
         self.width
     }
 
-    pub fn get_height(&self) -> u8 {
+    pub fn get_height(&self) -> f32 {
         self.height
+    }
+
+    pub fn get_depth(&self) -> ObstacleDepth {
+        self.depth
+    }
+
+    pub fn get_fast(&self) -> bool {
+        self.fast
+    }
+
+    pub fn get_rot_opt(&self) -> Option<&Quaternion<f32>> {
+        self.rot_opt.as_ref()
+    }
+
+    pub fn get_color_opt(&self) -> Option<&Color> {
+        self.color_opt.as_ref()
+    }
+
+    pub fn get_notejump_speed_opt(&self) -> Option<f32> {
+        self.notejump_speed_opt
+    }
+
+    pub fn get_notejump_bpm_offset_opt(&self) -> Option<f32> {
+        self.notejump_bpm_offset_opt
     }
 }
 
 pub struct Bomb {
     bpm_pos: f32,
-    x: u8,
-    y: u8,
+    x: f32,
+    y: f32,
 }
 
 impl Bomb {
-    fn new(bpm_pos: f32, x: u8, y: u8) -> Self {
+    fn new(bpm_pos: f32, x: f32, y: f32) -> Self {
         Self {
             bpm_pos,
             x,
@@ -827,11 +897,11 @@ impl Bomb {
         self.bpm_pos
     }
 
-    pub fn get_x(&self) -> u8 {
+    pub fn get_x(&self) -> f32 {
         self.x
     }
 
-    pub fn get_y(&self) -> u8 {
+    pub fn get_y(&self) -> f32 {
         self.y
     }
 }
@@ -854,15 +924,29 @@ impl Beatmap_V2 {
             if raw_note.note_type != 3 {
                 let (x, y, note_type) = match parse_note(raw_note.x, raw_note.y, raw_note.note_type) {
                     Ok(r) => r,
-                    Err(_) => continue, // TODO: provide strict mode
+                    Err(_) => continue, 
                 };
 
-                let note = Note::new(raw_note.bpm_pos, x, y, note_type, raw_note.cut_dir);
+                let mut color_opt = None;
+                let mut notejump_speed_opt = None;
+                let mut notejump_bpm_offset_opt = None;
+
+                if let Some(custom_data) = raw_note.custom_data_opt {
+                    color_opt = match parse_noodle_color(custom_data.color_opt.as_deref()) {
+                        Ok(color_opt) => color_opt,
+                        Err(_) => continue,
+                    };
+
+                    notejump_speed_opt = custom_data.notejump_speed_opt;
+                    notejump_bpm_offset_opt = custom_data.notejump_bpm_offset_opt;
+                }
+
+                let note = Note::new(raw_note.bpm_pos, x, y, note_type, raw_note.cut_dir, color_opt, notejump_speed_opt, notejump_bpm_offset_opt);
                 notes.push(note);
             } else {
                 let (x, y) = match parse_bomb(raw_note.x, raw_note.y) {
                     Ok(r) => r,
-                    Err(_) => continue, // TODO: provide strict mode
+                    Err(_) => continue, 
                 };
 
                 let bomb = Bomb::new(raw_note.bpm_pos, x, y);
@@ -871,28 +955,70 @@ impl Beatmap_V2 {
         }
 
         for raw_obstacle in self.obstacles {
-            let (mut raw_y, mut raw_height) = (raw_obstacle.y, raw_obstacle.height);
+            let (mut raw_y, mut raw_height) = (raw_obstacle.y_opt, raw_obstacle.height_opt);
 
-            if let Some(obstacle_type) = raw_obstacle.obstacle_type {
+            if let Some(obstacle_type) = raw_obstacle.obstacle_type_opt {
                 // See https://bsmg.wiki/mapping/map-format/beatmap.html#obstacles-type .
 
                 match obstacle_type { 
                     0 => (raw_y, raw_height) = (Some(0), Some(5)), // Full-height wall
                     1 => (raw_y, raw_height) = (Some(2), Some(3)), // Crouch wall
                     2 => (), // Free wall
-                    _ => continue, // TODO: provide strict mode
+                    _ => continue, 
                 }
             }
 
             let raw_y = raw_y.ok_or(Error::Build("Obstacle y is missing".to_string()))?;
             let raw_height = raw_height.ok_or(Error::Build("Obstacle height is missing".to_string()))?;
 
-            let (x, y, width, height) = match parse_obstacle(raw_obstacle.x, raw_y, raw_obstacle.width, raw_height) {
+            let (mut x, mut y, mut width, mut height) = match parse_obstacle(raw_obstacle.x, raw_y, raw_obstacle.width, raw_height) {
                 Ok(r) => r,
-                Err(_) => continue, // TODO: provide strict mode
+                Err(_) => continue, 
             };
 
-            let obstacle = Obstacle::new(raw_obstacle.bpm_pos, x, y, raw_obstacle.duration, width, height);
+            let (bpm_pos, duration, fast) = convert_duration(raw_obstacle.bpm_pos, raw_obstacle.duration);
+
+            let mut depth = ObstacleDepth::Duration(duration);
+            let mut rot_opt = None;
+            let mut color_opt = None;
+            let mut notejump_speed_opt = None;
+            let mut notejump_bpm_offset_opt = None;
+
+            if let Some(custom_data) = raw_obstacle.custom_data_opt {
+                color_opt = match parse_noodle_color(custom_data.color_opt.as_deref()) {
+                    Ok(color_opt) => color_opt,
+                    Err(_) => continue,
+                };
+
+                notejump_speed_opt = custom_data.notejump_speed_opt;
+                notejump_bpm_offset_opt = custom_data.notejump_bpm_offset_opt;
+
+                match parse_noodle_scale(custom_data.scale_opt.as_deref()) {
+                    Ok(scale_opt) => if let Some(scale) = scale_opt {
+                        let scale_depth_opt;
+                        (width, height, scale_depth_opt) = (scale.0, scale.1, scale.2);
+                        
+                        if let Some(scale_depth) = scale_depth_opt {
+                            depth = ObstacleDepth::Scale(scale_depth);
+                        }
+                    },
+                    Err(_) => continue,
+                }
+
+                match parse_noodle_rot(custom_data.rot_opt.as_deref()) {
+                    Ok(r) => rot_opt = r,
+                    Err(_) => continue,
+                }
+
+                match parse_noodle_pos(custom_data.pos_opt.as_deref()) {
+                    Ok(pos_opt) => if let Some(pos) = pos_opt {
+                        (x, y) = (pos.0, pos.1)
+                    },
+                    Err(_) => continue,
+                }
+            }
+
+            let obstacle = Obstacle::new(bpm_pos, x, y, width, height, depth, fast, rot_opt, color_opt, notejump_speed_opt, notejump_bpm_offset_opt);
             obstacles.push(obstacle);
         }
 
@@ -901,7 +1027,7 @@ impl Beatmap_V2 {
 }
 
 #[derive(Deserialize)]
-struct Beatmap_V2_Note { // TODO: impl validate
+struct Beatmap_V2_Note { 
     #[serde(rename = "_time")]
     bpm_pos: f32,
     #[serde(rename = "_lineIndex")]
@@ -912,24 +1038,54 @@ struct Beatmap_V2_Note { // TODO: impl validate
     note_type: i32,
     #[serde(rename = "_cutDirection")]
     cut_dir: NoteCutDir,
+    #[serde(rename = "_customData")]
+    custom_data_opt: Option<Beatmap_V2_Note_CustomData>,
 }
 
 #[derive(Deserialize)]
-struct Beatmap_V2_Obstacle { // TODO: impl validate
+struct Beatmap_V2_Note_CustomData {
+    #[serde(rename = "_color")]
+    color_opt: Option<Vec<f32>>,
+    #[serde(rename = "_noteJumpMovementSpeed")]
+    notejump_speed_opt: Option<f32>,
+    #[serde(rename = "_noteJumpStartBeatOffset")]
+    notejump_bpm_offset_opt: Option<f32>,
+}
+
+#[derive(Deserialize)]
+struct Beatmap_V2_Obstacle { 
     #[serde(rename = "_time")]
     bpm_pos: f32,
     #[serde(rename = "_lineIndex")]
     x: i32,
     #[serde(rename = "_lineLayer")]
-    y: Option<i32>,
+    y_opt: Option<i32>,
     #[serde(rename = "_duration")]
     duration: f32,
     #[serde(rename = "_width")]
     width: i32,
     #[serde(rename = "_height")]
-    height: Option<i32>,
+    height_opt: Option<i32>,
     #[serde(rename = "_type")]
-    obstacle_type: Option<i32>,
+    obstacle_type_opt: Option<i32>,
+    #[serde(rename = "_customData")]
+    custom_data_opt: Option<Beatmap_V2_Obstacle_CustomData>,
+}
+
+#[derive(Deserialize)]
+struct Beatmap_V2_Obstacle_CustomData {
+    #[serde(rename = "_color")]
+    color_opt: Option<Vec<f32>>,
+    #[serde(rename = "_noteJumpMovementSpeed")]
+    notejump_speed_opt: Option<f32>,
+    #[serde(rename = "_noteJumpStartBeatOffset")]
+    notejump_bpm_offset_opt: Option<f32>,
+    #[serde(rename = "_scale")]
+    scale_opt: Option<Vec<f32>>,
+    #[serde(rename = "_localRotation")]
+    rot_opt: Option<Vec<f32>>,
+    #[serde(rename = "_position")]
+    pos_opt: Option<Vec<f32>>,
 }
 
 #[derive(Deserialize)]
@@ -951,27 +1107,83 @@ impl Beatmap_V3 {
         for raw_note in self.notes {
             let (x, y, note_type) = match parse_note(raw_note.x, raw_note.y, raw_note.note_type) {
                 Ok(r) => r,
-                Err(_) => continue, // TODO: provide strict mode
+                Err(_) => continue, 
             };
 
-            let note = Note::new(raw_note.bpm_pos, x, y, note_type, raw_note.cut_dir);
+            let mut color_opt = None;
+            let mut notejump_speed_opt = None;
+            let mut notejump_bpm_offset_opt = None;
+
+            if let Some(custom_data) = raw_note.custom_data_opt {
+                color_opt = match parse_noodle_color(custom_data.color_opt.as_deref()) {
+                    Ok(color_opt) => color_opt,
+                    Err(_) => continue,
+                };
+
+                notejump_speed_opt = custom_data.notejump_speed_opt;
+                notejump_bpm_offset_opt = custom_data.notejump_bpm_offset_opt;
+            }
+
+            let note = Note::new(raw_note.bpm_pos, x, y, note_type, raw_note.cut_dir, color_opt, notejump_speed_opt, notejump_bpm_offset_opt);
             notes.push(note);
         }
 
         for raw_obstacle in self.obstacles {
-            let (x, y, width, height) = match parse_obstacle(raw_obstacle.x, raw_obstacle.y, raw_obstacle.width, raw_obstacle.height) {
+            let (mut x, mut y, mut width, mut height) = match parse_obstacle(raw_obstacle.x, raw_obstacle.y, raw_obstacle.width, raw_obstacle.height) {
                 Ok(r) => r,
-                Err(_) => continue, // TODO: provide strict mode
+                Err(_) => continue, 
             };
 
-            let obstacle = Obstacle::new(raw_obstacle.bpm_pos, x, y, raw_obstacle.duration, width, height);
+            let (bpm_pos, duration, fast) = convert_duration(raw_obstacle.bpm_pos, raw_obstacle.duration);
+
+            let mut depth = ObstacleDepth::Duration(duration);
+            let mut rot_opt = None;
+            let mut color_opt = None;
+            let mut notejump_speed_opt = None;
+            let mut notejump_bpm_offset_opt = None;
+
+            if let Some(custom_data) = raw_obstacle.custom_data_opt {
+                color_opt = match parse_noodle_color(custom_data.color_opt.as_deref()) {
+                    Ok(color_opt) => color_opt,
+                    Err(_) => continue,
+                };
+
+                notejump_speed_opt = custom_data.notejump_speed_opt;
+                notejump_bpm_offset_opt = custom_data.notejump_bpm_offset_opt;
+
+                match parse_noodle_scale(custom_data.scale_opt.as_deref()) {
+                    Ok(scale_opt) => if let Some(scale) = scale_opt {
+                        let scale_depth_opt;
+                        (width, height, scale_depth_opt) = (scale.0, scale.1, scale.2);
+
+                        if let Some(scale_depth) = scale_depth_opt {
+                            depth = ObstacleDepth::Scale(scale_depth);
+                        }
+                    },
+                    Err(_) => continue,
+                }
+
+                match parse_noodle_rot(custom_data.rot_opt.as_deref()) {
+                    Ok(r) => rot_opt = r,
+                    Err(_) => continue,
+                }
+
+                match parse_noodle_pos(custom_data.pos_opt.as_deref()) {
+                    Ok(pos_opt) => if let Some(pos) = pos_opt {
+                        (x, y) = (pos.0, pos.1)
+                    },
+                    Err(_) => continue,
+                }
+            }
+
+            let obstacle = Obstacle::new(bpm_pos, x, y, width, height, depth, fast, rot_opt, color_opt, notejump_speed_opt, notejump_bpm_offset_opt);
             obstacles.push(obstacle);
         }
 
         for raw_bomb in self.bombs {
             let (x, y) = match parse_bomb(raw_bomb.x, raw_bomb.y) {
                 Ok(r) => r,
-                Err(_) => continue, // TODO: provide strict mode
+                Err(_) => continue, 
             };
 
             let bomb = Bomb::new(raw_bomb.bpm_pos, x, y);
@@ -983,7 +1195,7 @@ impl Beatmap_V3 {
 }
 
 #[derive(Deserialize)]
-struct Beatmap_V3_Note { // TODO: impl validate
+struct Beatmap_V3_Note { 
     #[serde(rename = "b")]
     bpm_pos: f32,
     x: i32,
@@ -992,10 +1204,22 @@ struct Beatmap_V3_Note { // TODO: impl validate
     note_type: i32,
     #[serde(rename = "d")]
     cut_dir: NoteCutDir,
+    #[serde(rename = "customData")]
+    custom_data_opt: Option<Beatmap_V3_Note_CustomData>,
 }
 
 #[derive(Deserialize)]
-struct Beatmap_V3_Obstacle { // TODO: impl validate
+struct Beatmap_V3_Note_CustomData {
+    #[serde(rename = "color")]
+    color_opt: Option<Vec<f32>>,
+    #[serde(rename = "noteJumpMovementSpeed")]
+    notejump_speed_opt: Option<f32>,
+    #[serde(rename = "noteJumpStartBeatOffset")]
+    notejump_bpm_offset_opt: Option<f32>,
+}
+
+#[derive(Deserialize)]
+struct Beatmap_V3_Obstacle { 
     #[serde(rename = "b")]
     bpm_pos: f32,
     x: i32,
@@ -1006,6 +1230,24 @@ struct Beatmap_V3_Obstacle { // TODO: impl validate
     width: i32,
     #[serde(rename = "h")]
     height: i32,
+    #[serde(rename = "customData")]
+    custom_data_opt: Option<Beatmap_V3_Obstacle_CustomData>,
+}
+
+#[derive(Deserialize)]
+struct Beatmap_V3_Obstacle_CustomData {
+    #[serde(rename = "color")]
+    color_opt: Option<Vec<f32>>,
+    #[serde(rename = "noteJumpMovementSpeed")]
+    notejump_speed_opt: Option<f32>,
+    #[serde(rename = "noteJumpStartBeatOffset")]
+    notejump_bpm_offset_opt: Option<f32>,
+    #[serde(rename = "scale")]
+    scale_opt: Option<Vec<f32>>,
+    #[serde(rename = "localRotation")]
+    rot_opt: Option<Vec<f32>>,
+    #[serde(rename = "position")]
+    pos_opt: Option<Vec<f32>>,
 }
 
 #[derive(Deserialize)]
@@ -1015,6 +1257,8 @@ struct Beatmap_V3_Bomb {
     x: i32,
     y: i32,
 }
+
+// For V4, there is no CustomJSONData support, see https://github.com/Aeroluna/CustomJSONData/issues/15 .
 
 #[derive(Deserialize)]
 struct Beatmap_V4 {
@@ -1039,34 +1283,34 @@ impl Beatmap_V4 {
         let mut bombs = Vec::new();
 
         for raw_note in self.notes {
-            if let Some(raw_note_data) = self.note_datas.get(raw_note.data_index as usize) { // TODO: provide strict mode
+            if let Some(raw_note_data) = self.note_datas.get(raw_note.data_index as usize) { 
                 let (x, y, note_type) = match parse_note(raw_note_data.x, raw_note_data.y, raw_note_data.note_type) {
                     Ok(r) => r,
-                    Err(_) => continue, // TODO: provide strict mode
+                    Err(_) => continue, 
                 };
 
-                let note = Note::new(raw_note.bpm_pos, x, y, note_type, raw_note_data.cut_dir);
+                let note = Note::new(raw_note.bpm_pos, x, y, note_type, raw_note_data.cut_dir, None, None, None);
                 notes.push(note);
             }
         }
 
         for raw_obstacle in self.obstacles {
-            if let Some(raw_obstacle_data) = self.obstacle_datas.get(raw_obstacle.data_index as usize) { // TODO: provide strict mode
+            if let Some(raw_obstacle_data) = self.obstacle_datas.get(raw_obstacle.data_index as usize) { 
                 let (x, y, width, height) = match parse_obstacle(raw_obstacle_data.x, raw_obstacle_data.y, raw_obstacle_data.width, raw_obstacle_data.height) {
                     Ok(r) => r,
-                    Err(_) => continue, // TODO: provide strict mode
+                    Err(_) => continue, 
                 };
 
-                let obstacle = Obstacle::new(raw_obstacle.bpm_pos, x, y, raw_obstacle_data.duration, width, height);
+                let obstacle = Obstacle::new(raw_obstacle.bpm_pos, x, y, width, height, ObstacleDepth::Duration(raw_obstacle_data.duration), false, None, None, None, None);
                 obstacles.push(obstacle);
             }
         }
 
         for raw_bomb in self.bombs {
-            if let Some(raw_bomb_data) = self.bomb_datas.get(raw_bomb.data_index as usize)  { // TODO: provide strict mode
+            if let Some(raw_bomb_data) = self.bomb_datas.get(raw_bomb.data_index as usize)  { 
                 let (x, y) = match parse_bomb(raw_bomb_data.x, raw_bomb_data.y) {
                     Ok(r) => r,
-                    Err(_) => continue, // TODO: provide strict mode
+                    Err(_) => continue, 
                 };
 
                 let bomb = Bomb::new(raw_bomb.bpm_pos, x, y);
@@ -1079,7 +1323,7 @@ impl Beatmap_V4 {
 }
 
 #[derive(Deserialize)]
-struct Beatmap_V4_Note { // TODO: impl validate
+struct Beatmap_V4_Note { 
     #[serde(rename = "b")]
     bpm_pos: f32,
     #[serde(rename = "i")]
@@ -1087,7 +1331,7 @@ struct Beatmap_V4_Note { // TODO: impl validate
 }
 
 #[derive(Deserialize)]
-struct Beatmap_V4_NoteData { // TODO: impl validate
+struct Beatmap_V4_NoteData { 
     x: i32,
     y: i32,
     #[serde(rename = "c")]
@@ -1097,7 +1341,7 @@ struct Beatmap_V4_NoteData { // TODO: impl validate
 }
 
 #[derive(Deserialize)]
-struct Beatmap_V4_Obstacle { // TODO: impl validate
+struct Beatmap_V4_Obstacle { 
     #[serde(rename = "b")]
     bpm_pos: f32,
     #[serde(rename = "i")]
@@ -1105,7 +1349,7 @@ struct Beatmap_V4_Obstacle { // TODO: impl validate
 }
 
 #[derive(Deserialize)]
-struct Beatmap_V4_ObstacleData { // TODO: impl validate
+struct Beatmap_V4_ObstacleData { 
     x: i32,
     y: i32,
     #[serde(rename = "d")]
@@ -1213,7 +1457,7 @@ fn get_version(top_value: &Value) -> Result<&str> {
     }
 }
 
-fn parse_note(raw_x: i32, raw_y: i32, raw_note_type: i32) -> Result<(u8, u8, NoteType)> {
+fn parse_note(raw_x: i32, raw_y: i32, raw_note_type: i32) -> Result<(f32, f32, NoteType)> {
     if !((0..=3).contains(&raw_x) && (0..=2).contains(&raw_y)) {
         return Err(Error::Build("Either note x or y invalid".to_string()));
     }
@@ -1224,25 +1468,135 @@ fn parse_note(raw_x: i32, raw_y: i32, raw_note_type: i32) -> Result<(u8, u8, Not
         _ => return Err(Error::Build("Note type is invalid".to_string())),
     };
 
-    Ok((raw_x.try_into().unwrap(), raw_y.try_into().unwrap(), note_type))
+    let (x, y) = convert_pos(raw_x, raw_y);
+
+    Ok((x, y, note_type))
 }
 
-fn parse_obstacle(raw_x: i32, raw_y: i32, raw_width: i32, raw_height: i32) -> Result<(u8, u8, u8, u8)> {
+fn parse_obstacle(raw_x: i32, raw_y: i32, raw_width: i32, raw_height: i32) -> Result<(f32, f32, f32, f32)> {
     if !((0..=3).contains(&raw_x) && (0..=2).contains(&raw_y)) {
         return Err(Error::Build("Either obstacle x or y invalid".to_string()));
     }
 
-    if !((0..=4).contains(&(raw_x + raw_width)) && (0..=5).contains(&(raw_y + raw_height))) {
-        return Err(Error::Build("Either obstacle width or height invalid".to_string()));
-    }
+    // Wallmaps usually have width = 0, so skip these check for now. TODO
+    //if !(raw_width > 0 && raw_height > 0) {
+    //    return Err(Error::Build("Either obstacle width or height invalid".to_string()));
+    //}
+    //
+    //if !((0..=4).contains(&(raw_x + raw_width)) && (0..=5).contains(&(raw_y + raw_height))) {
+    //    return Err(Error::Build("Obstacle dimensions are invalid".to_string()));
+    //}
 
-    Ok((raw_x.try_into().unwrap(), raw_y.try_into().unwrap(), raw_width.try_into().unwrap(), raw_height.try_into().unwrap()))
+    let (x, y) = convert_pos(raw_x, raw_y);
+
+    Ok((x, y, raw_width as f32, raw_height as f32))
 }
 
-fn parse_bomb(raw_x: i32, raw_y: i32) -> Result<(u8, u8)> {
+fn parse_bomb(raw_x: i32, raw_y: i32) -> Result<(f32, f32)> {
     if !((0..=3).contains(&raw_x) && (0..=2).contains(&raw_y)) {
         return Err(Error::Build("Either bomb x or y invalid".to_string()));
     }
 
-    Ok((raw_x.try_into().unwrap(), raw_y.try_into().unwrap()))
+    let (x, y) = convert_pos(raw_x, raw_y);
+
+    Ok((x, y))
+}
+
+fn convert_pos(raw_x: i32, raw_y: i32) -> (f32, f32) {
+    // Grid coordinate system:
+    //
+    //               y
+    //               ^
+    //               |
+    //               1
+    //               |        
+    //         +--+  |  +--+     +--+
+    //         |  |  |  |  |     |  |  
+    //         +--+  |  +--+     +--+
+    //               |         
+    // <-- -1 ------ 0 ------ 1 -------> x
+    //
+    // x, y: left-bottom coordinate
+    // width, height: number of grids taken
+
+    (raw_x as f32 - 2.0, raw_y as f32)
+}
+
+fn convert_duration(raw_bpm_pos: f32, raw_duration: f32) -> (f32, f32, bool) {
+    let mut bpm_pos = raw_bpm_pos;
+    let mut duration = raw_duration;
+    let mut fast = false;
+
+    if duration < 0.0 {
+        bpm_pos += duration;
+        duration = -duration;
+        fast = true;
+    }
+
+    (bpm_pos, duration, fast)
+}
+
+// TODO: replace parse_noodle_* methods with custom deserializer?
+
+fn parse_noodle_color(values_opt: Option<&[f32]>) -> Result<Option<Color>> {
+    // TODO: alpha is discarded at the moment
+
+    match values_opt {
+        Some(values) => {
+            if values.len() < 3 {
+                return Err(Error::Build("Color requires at least 3 (rgb) components".to_string()));
+            }
+
+            Ok(Some(Color::from_srgb_float(values[0], values[1], values[2])))
+        },
+        None => Ok(None),
+    }
+}
+
+fn parse_noodle_scale(values_opt: Option<&[f32]>) -> Result<Option<(f32, f32, Option<f32>)>> {
+    match values_opt {
+        Some(values) => {
+            if values.len() < 2 {
+                return Err(Error::Build("Scale requires at least 2 (xy) components".to_string()));
+            }
+
+            Ok(Some((values[0], values[1], values.get(2).copied())))
+        },
+        None => Ok(None),
+    }
+}
+
+fn parse_noodle_rot(values_opt: Option<&[f32]>) -> Result<Option<Quaternion<f32>>> {
+    match values_opt {
+        Some(values) => {
+            if values.len() < 3 {
+                return Err(Error::Build("Rotation requires at least 3 (xyz) components".to_string()));
+            }
+
+            // Implementation notes:
+            // - Noodle is using Quaternion.Euler to do rotation (see https://github.com/Aeroluna/NoodleExtensions/blob/53a21b669fb40d93930561f07737545e68636d79/NoodleExtensions/NoodleObjectData.cs#L88).
+            // - Unity (left-handed) coordinate system is mapped to our (right-handed) coordinate system.
+            // - From Unity manual: "Euler angle rotations perform three separate rotations around the three axes. Unity
+            //   performs these rotations sequentially around the z-axis first, followed by the x-axis, and finally the y-axis.
+            //   This method is called extrinsic rotation; the original coordinate system doesn’t change while the rotations occur."
+            //   (see https://docs.unity3d.com/6000.7/Documentation/Manual/class-Quaternion.html).
+
+            let rot = Quaternion::from_angle_z(Deg(-values[1])) * Quaternion::from_angle_x(Deg(-values[0])) * Quaternion::from_angle_y(Deg(-values[2]));
+            Ok(Some(rot))
+        },
+        None => Ok(None),
+    }
+}
+
+fn parse_noodle_pos(values_opt: Option<&[f32]>) -> Result<Option<(f32, f32)>> {
+    match values_opt {
+        Some(values) => {
+            if values.len() < 2 {
+                return Err(Error::Build("Position requires at least 2 (xy) components".to_string()));
+            }
+
+            Ok(Some((values[0], values[1])))
+        },
+        None => Ok(None),
+    }
 }
