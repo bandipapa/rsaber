@@ -25,6 +25,8 @@ impl ModelFactory for BombParam {
     type Model = Bomb;
 
     fn get_mesh(asset_mgr: AssetManagerRc, output_device: OutputDeviceRc) -> Mesh {
+        // Mesh is unit (1m) sized and the object center is at the origin.
+
         Obj::open(asset_mgr, output_device, "bomb", &[
             ("bomb", &InstShaderType::PhongColor), // 0
         ])

@@ -985,13 +985,12 @@ impl Beatmap_V2 {
             let mut notejump_bpm_offset_opt = None;
 
             if let Some(custom_data) = raw_obstacle.custom_data_opt {
-                color_opt = match parse_noodle_color(custom_data.color_opt.as_deref()) {
-                    Ok(color_opt) => color_opt,
+                match parse_noodle_pos(custom_data.pos_opt.as_deref()) {
+                    Ok(pos_opt) => if let Some(pos) = pos_opt {
+                        (x, y) = (pos.0, pos.1)
+                    },
                     Err(_) => continue,
-                };
-
-                notejump_speed_opt = custom_data.notejump_speed_opt;
-                notejump_bpm_offset_opt = custom_data.notejump_bpm_offset_opt;
+                }
 
                 match parse_noodle_scale(custom_data.scale_opt.as_deref()) {
                     Ok(scale_opt) => if let Some(scale) = scale_opt {
@@ -1005,17 +1004,18 @@ impl Beatmap_V2 {
                     Err(_) => continue,
                 }
 
-                match parse_noodle_rot(custom_data.rot_opt.as_deref()) {
-                    Ok(r) => rot_opt = r,
+                rot_opt = match parse_noodle_rot(custom_data.rot_opt.as_deref()) {
+                    Ok(rot_opt) => rot_opt,
                     Err(_) => continue,
-                }
+                };
 
-                match parse_noodle_pos(custom_data.pos_opt.as_deref()) {
-                    Ok(pos_opt) => if let Some(pos) = pos_opt {
-                        (x, y) = (pos.0, pos.1)
-                    },
+                color_opt = match parse_noodle_color(custom_data.color_opt.as_deref()) {
+                    Ok(color_opt) => color_opt,
                     Err(_) => continue,
-                }
+                };
+
+                notejump_speed_opt = custom_data.notejump_speed_opt;
+                notejump_bpm_offset_opt = custom_data.notejump_bpm_offset_opt;
             }
 
             let obstacle = Obstacle::new(bpm_pos, x, y, width, height, depth, fast, rot_opt, color_opt, notejump_speed_opt, notejump_bpm_offset_opt);
@@ -1143,13 +1143,12 @@ impl Beatmap_V3 {
             let mut notejump_bpm_offset_opt = None;
 
             if let Some(custom_data) = raw_obstacle.custom_data_opt {
-                color_opt = match parse_noodle_color(custom_data.color_opt.as_deref()) {
-                    Ok(color_opt) => color_opt,
+                match parse_noodle_pos(custom_data.pos_opt.as_deref()) {
+                    Ok(pos_opt) => if let Some(pos) = pos_opt {
+                        (x, y) = (pos.0, pos.1)
+                    },
                     Err(_) => continue,
-                };
-
-                notejump_speed_opt = custom_data.notejump_speed_opt;
-                notejump_bpm_offset_opt = custom_data.notejump_bpm_offset_opt;
+                }
 
                 match parse_noodle_scale(custom_data.scale_opt.as_deref()) {
                     Ok(scale_opt) => if let Some(scale) = scale_opt {
@@ -1163,17 +1162,18 @@ impl Beatmap_V3 {
                     Err(_) => continue,
                 }
 
-                match parse_noodle_rot(custom_data.rot_opt.as_deref()) {
-                    Ok(r) => rot_opt = r,
+                rot_opt = match parse_noodle_rot(custom_data.rot_opt.as_deref()) {
+                    Ok(rot_opt) => rot_opt,
                     Err(_) => continue,
-                }
+                };
 
-                match parse_noodle_pos(custom_data.pos_opt.as_deref()) {
-                    Ok(pos_opt) => if let Some(pos) = pos_opt {
-                        (x, y) = (pos.0, pos.1)
-                    },
+                color_opt = match parse_noodle_color(custom_data.color_opt.as_deref()) {
+                    Ok(color_opt) => color_opt,
                     Err(_) => continue,
-                }
+                };
+
+                notejump_speed_opt = custom_data.notejump_speed_opt;
+                notejump_bpm_offset_opt = custom_data.notejump_bpm_offset_opt;
             }
 
             let obstacle = Obstacle::new(bpm_pos, x, y, width, height, depth, fast, rot_opt, color_opt, notejump_speed_opt, notejump_bpm_offset_opt);
@@ -1503,7 +1503,7 @@ fn parse_bomb(raw_x: i32, raw_y: i32) -> Result<(f32, f32)> {
 }
 
 fn convert_pos(raw_x: i32, raw_y: i32) -> (f32, f32) {
-    // Grid coordinate system:
+    // Convert raw_x, raw_y to grid coordinate system:
     //
     //               y
     //               ^
@@ -1578,7 +1578,7 @@ fn parse_noodle_rot(values_opt: Option<&[f32]>) -> Result<Option<Quaternion<f32>
             // - Unity (left-handed) coordinate system is mapped to our (right-handed) coordinate system.
             // - From Unity manual: "Euler angle rotations perform three separate rotations around the three axes. Unity
             //   performs these rotations sequentially around the z-axis first, followed by the x-axis, and finally the y-axis.
-            //   This method is called extrinsic rotation; the original coordinate system doesn’t change while the rotations occur."
+            //   This method is called extrinsic rotation; the original coordinate system doesn't change while the rotations occur."
             //   (see https://docs.unity3d.com/6000.7/Documentation/Manual/class-Quaternion.html).
 
             let rot = Quaternion::from_angle_z(Deg(-values[1])) * Quaternion::from_angle_x(Deg(-values[0])) * Quaternion::from_angle_y(Deg(-values[2]));

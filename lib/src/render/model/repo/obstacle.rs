@@ -70,10 +70,6 @@ static VERTEXES: LazyLock<Box<[VertexPosNormal]>> = LazyLock::new(|| {
     for tr in [tr_x_neg, tr_x_pos, tr_y_neg, tr_y_pos, tr_z_neg, tr_z_pos] {
         for side_data in side_datas {
             let mut vertex = tr(side_data);
-
-            // Origin is center-front-buttom, because of the rotation, see
-            // https://heck.aeroluna.dev/assets/items/frontcenter.png .
-
             vertex.pos[1] += POS;
             vertex.pos[2] += POS;
 
@@ -102,6 +98,9 @@ impl ModelFactory for ObstacleParam {
     type Model = Obstacle;
 
     fn get_mesh(_asset_mgr: AssetManagerRc, output_device: OutputDeviceRc) -> Mesh {
+        // Mesh is unit (1m) sized and the origin is center-front-buttom,
+        // because of the rotation, see https://heck.aeroluna.dev/assets/items/frontcenter.png .
+
         let mut indexes: Vec<u16> = Vec::new();
         let mut vertex_index = 0;
 

@@ -37,7 +37,7 @@ const ZONE_OUT_DIST: f32 = 15.0; // [m]
 
 const OBSTACLE_SPEED_TWEAK: f32 = 5.0;
 
-const BOMB_COLOR: Color = Color([0.5, 0.5, 0.5]);
+const BOMB_COLOR: Color = Color([0.1, 0.1, 0.1]);
 const BOMB_PHONG_PARAM: PhongParam = PhongParam::new(0.1, 0.2, 0.3, 64.0);
 
 const G: f32 = 9.8; // [m/s2]

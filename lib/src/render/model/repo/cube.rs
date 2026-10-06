@@ -37,6 +37,8 @@ impl ModelFactory for CubeParam {
     type Model = Cube;
 
     fn get_mesh(asset_mgr: AssetManagerRc, output_device: OutputDeviceRc) -> Mesh {
+        // Mesh is unit (1m) sized and the object center is at the origin.
+
         // TODO: Make it possible to use the same submesh, e.g. body_l and body_r are the same, but mirrored.
         Obj::open(asset_mgr, output_device, "cube", &[
             ("body_l", &InstShaderType::PhongColor), // 0

@@ -12,6 +12,8 @@ license-file.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+exclude = ["/testmap"] # Don't include it in crate, because of size limit.
+
 [dependencies]
 
 ash = {version = "0.38.0", optional = true}

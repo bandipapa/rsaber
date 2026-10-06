@@ -29,7 +29,7 @@ fn android_main(app: AndroidApp) {
     loop {
         // Poll android events.
 
-        app.poll_events(Some(Duration::from_secs(0)), |event| { 
+        app.poll_events(Some(Duration::from_secs(0)), |event| {
             match event {
                 PollEvent::Main(event) => {
                     match event {
@@ -38,7 +38,7 @@ fn android_main(app: AndroidApp) {
                             while it.next(|_| InputStatus::Unhandled) {
                             }
                         },
-                        MainEvent::TerminateWindow {..} => {
+                        MainEvent::Destroy => {
                             terminate = true;
                         },
                         _ => (),
