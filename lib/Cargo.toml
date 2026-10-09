@@ -39,7 +39,7 @@ symphonia = {version = "0.6.0", default-features = false, features = ["mp3", "og
 tokio = {version = "1.49.0", default-features = false, features = ["parking_lot", "rt-multi-thread"]}
 url = {version = "2.5.8", features = ["serde"]}
 wgpu = {version = "30.0.0", default-features = false, features = ["std", "parking_lot", "vulkan", "wgsl"]}
-zip = "8.0.0"
+zip = "9.0.0"
 
 rsaber_macros = {path = "../macros", version = "0.6.0"}
 

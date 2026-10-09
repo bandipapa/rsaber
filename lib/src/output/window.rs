@@ -194,13 +194,14 @@ impl Frame for WindowFrame {
 fn perspective<A: Into<Rad<f32>>>(aspect: f32, fovy: A, near: f32, far: f32) -> Matrix4<f32> {
     // Calculate projection matrix suitable for wgpu NDC: (-1, -1, 0) ... (1, 1, 1).
     // Taken from nalgebra-glm->perspective_rh_zo.
+    // The matrix has been tweaked for Reverse-Z.
 
     let tan_half_fovy = (fovy.into() / 2.0).tan();
 
     Matrix4::new(
         1.0 / (aspect * tan_half_fovy), 0.0, 0.0, 0.0,
         0.0, 1.0 / tan_half_fovy, 0.0, 0.0,
-        0.0, 0.0, far / (near - far), -1.0,
-        0.0, 0.0, -(far * near) / (far - near), 0.0
+        0.0, 0.0, near / (far - near), -1.0,
+        0.0, 0.0, (far * near) / (far - near), 0.0
     )
 }

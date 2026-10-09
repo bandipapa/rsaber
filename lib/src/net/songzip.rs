@@ -39,7 +39,13 @@ impl Request for SongZipRequest {
         // TODO: Place limit on uncompressed size?
 
         let mut zip = ZipArchive::new(Cursor::new(buf))?;
-        let names: Box<[_]> = zip.file_names().map(|name| name.to_string()).collect();
+        let mut names = Vec::new();
+
+        for name in zip.file_names() {
+            let name = name?.to_string();
+            names.push(name);
+        }
+
         let mut content = HashMap::new();
 
         for name in names {

@@ -1035,6 +1035,7 @@ impl ScenePose for XRPose {
 fn perspective(fov: &openxr::Fovf, near: f32, far: f32) -> Matrix4<f32> {
     // Calculate projection matrix.
     // Taken from https://github.com/KhronosGroup/OpenXR-SDK/blob/main/src/common/xr_linear.h->XrMatrix4x4f_CreateProjectionFov.
+    // The matrix has been tweaked for Reverse-Z.
 
     let tan_left = Rad(fov.angle_left).tan();
     let tan_right = Rad(fov.angle_right).tan();
@@ -1047,7 +1048,7 @@ fn perspective(fov: &openxr::Fovf, near: f32, far: f32) -> Matrix4<f32> {
     Matrix4::new(
         2.0 / tan_width, 0.0, 0.0, 0.0,
         0.0, 2.0 / tan_height, 0.0, 0.0,
-        (tan_right + tan_left) / tan_width, (tan_up + tan_down) / tan_height, -far / (far - near), -1.0,
-        0.0, 0.0, -(far * near) / (far - near), 0.0
+        (tan_right + tan_left) / tan_width, (tan_up + tan_down) / tan_height, near / (far - near), -1.0,
+        0.0, 0.0, (far * near) / (far - near), 0.0
     )
 }

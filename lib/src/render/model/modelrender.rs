@@ -302,7 +302,9 @@ impl ModelRenderer {
                     placeholders: &shader_placeholders,
                 });
 
-                // Create pipeline.
+                // Create pipeline. We are using Reverse-Z to improve depth buffer precision, see
+                // - https://developer.nvidia.com/content/depth-precision-visualized
+                // - https://iolite-engine.com/blog_posts/reverse_z_cheatsheet
 
                 let pipeline = output_device.create_render_pipeline(&OutputRenderPipelineDesc {
                     layout: Some(&pipeline_layout),
@@ -316,7 +318,7 @@ impl ModelRenderer {
                     depth_stencil: Some(DepthStencilState {
                         format: output_info.get_depth_format(),
                         depth_write_enabled: Some(true),
-                        depth_compare: Some(CompareFunction::Less),
+                        depth_compare: Some(CompareFunction::Greater),
                         stencil: Default::default(),
                         bias: Default::default(),
                     }),
@@ -434,7 +436,7 @@ impl RenderNodeExec for ModelRenderer {
             depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
                 view: &inner.depth_view,
                 depth_ops: Some(Operations {
-                    load: LoadOp::Clear(1.0),
+                    load: LoadOp::Clear(0.0),
                     store: StoreOp::Discard,
                 }),
                 stencil_ops: None,
