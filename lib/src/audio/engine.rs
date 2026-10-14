@@ -85,7 +85,7 @@ impl AudioEngine {
             (ranges[0], MIN_SAMPLE_RATE)
         } else {
             ranges = all_ranges.iter().filter(|range| range.min_sample_rate() >= MIN_SAMPLE_RATE).collect();
-            ranges.sort_by_key(|range| range.min_sample_rate());
+            ranges.sort_unstable_by_key(|range| range.min_sample_rate());
             let range = ranges.first().expect("No supported format");
 
             (*range, range.min_sample_rate())

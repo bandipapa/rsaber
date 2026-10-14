@@ -33,7 +33,5 @@ struct VertexOut {
 }
 
 @fragment fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
-    let color = in.color;
-
-    return vec4(color, 1);
+    return vec4(in.color, 1);
 }

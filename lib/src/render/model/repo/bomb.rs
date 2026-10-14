@@ -74,7 +74,7 @@ impl Bomb {
 }
 
 impl Model for Bomb {
-    fn fill_phong_color(&self, inst_index: u32) -> InstPhongColorBuf {
+    fn fill_phong_color(&self, inst_index: u16) -> InstPhongColorBuf {
         assert!(inst_index == 0);
 
         let inner = self.inner.borrow();

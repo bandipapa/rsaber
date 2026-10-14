@@ -111,7 +111,7 @@ impl Pointer { // TODO: would be nice if we can integrate this one to saber mode
 }
 
 impl Model for Pointer {
-    fn fill_simple_color(&self, inst_index: u32) -> InstSimpleColorBuf {
+    fn fill_simple_color(&self, inst_index: u16) -> InstSimpleColorBuf {
         assert!(inst_index == 0);
 
         let inner = self.inner.borrow();

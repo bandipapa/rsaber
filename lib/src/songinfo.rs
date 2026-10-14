@@ -533,7 +533,7 @@ impl BPMMap {
     }
 
     fn new(mut ranges: Vec<BPMRange>) -> Self {
-        ranges.sort_by(|range1, range2| range1.bpm.start.partial_cmp(&range2.bpm.start).expect("Unable to compare"));
+        ranges.sort_unstable_by(|range1, range2| range1.bpm.start.total_cmp(&range2.bpm.start));
 
         Self {
             ranges: ranges.into_boxed_slice(),
@@ -678,7 +678,7 @@ impl Beatmap {
         let mut obstacles = Vec::new();
 
         for i in 0..TEST_NUM {
-            let obstacle = Obstacle::new(i as f32, -2.0, 1.0, 2.0, 2.0, ObstacleDepth::Scale(2.0), false, None, None, None, None);
+            let obstacle = Obstacle::new(i as f32, -2.0, 1.0, 2.0, 2.0, ObstacleDepth::Scale(4.0), false, None, None, None, None);
             obstacles.push(obstacle);
         }
 

@@ -18,7 +18,7 @@ use rsaber_lib::scene::{SceneInput, ScenePose, ScenePoseScroll};
 use rsaber_lib::util::Stats;
 use rsaber_lib::wgpu::{InstanceDescriptor, SurfaceTarget};
 
-const COMMENT: &str = "You can use keys w-a-s-d to move, z-x to change elevation, r to reset view and arrow keys to rotate camera. Interaction with UI controls can be done with mouse.";
+const COMMENT: &str = "You can use keys w-a-s-d to move, z-x to change elevation, r to reset view, p to pause/resume audio engine and arrow keys to rotate camera. Interaction with UI controls can be done with mouse.";
 
 const MIN_SIZE: PhysicalSize<u32> = PhysicalSize { width: 800, height: 600 };
 const DEFAULT_POS: Vector3<f32> = Vector3::new(0.0, -2.5, 1.8); // TODO: configurable height
@@ -45,6 +45,7 @@ struct AppData {
     cursor_click: bool,
     cursor_scroll: ScenePoseScroll,
     size_opt: Option<(u32, u32)>,
+    audio_running: bool,
 }
 
 impl App {
@@ -86,6 +87,7 @@ impl ApplicationHandler for App {
                 cursor_click: false,
                 cursor_scroll: (0.0, 0.0),
                 size_opt: None,
+                audio_running: true,
             });
         }
     }
@@ -99,17 +101,18 @@ impl ApplicationHandler for App {
         let window = &data.window;
         let output = &data.output;
         let main = &data.main;
+        let audio_engine = main.get_audio_engine();
         let keys = &mut data.keys;
         let prev_ts_opt = &mut data.prev_ts_opt;
         let cursor_pos = &mut data.cursor_pos;
         let cursor_click = &mut data.cursor_click;
         let cursor_scroll = &mut data.cursor_scroll;
         let size_opt = &mut data.size_opt;
+        let audio_running = &mut data.audio_running;
 
         match event {
             WindowEvent::Resized(_) => {
                 let size = window.inner_size();
-                let audio_engine = main.get_audio_engine();
 
                 if size.width == 0 || size.height == 0 {
                     audio_engine.pause();
@@ -122,7 +125,9 @@ impl ApplicationHandler for App {
                 } else {
                     output.resize(size.width, size.height);
                     main.configure(size.width, size.height);
-                    audio_engine.start();
+                    if *audio_running {
+                        audio_engine.start();
+                    }
                     *size_opt = Some((size.width, size.height));
                 }
             },
@@ -257,13 +262,23 @@ impl ApplicationHandler for App {
                 }
             },
             WindowEvent::KeyboardInput { event, .. } => {
-                if !event.repeat {
+                if let PhysicalKey::Code(key) = event.physical_key && !event.repeat {
                     let pressed = match event.state {
                         ElementState::Pressed => true,
                         ElementState::Released => false,
                     };
 
-                    if let PhysicalKey::Code(key) = event.physical_key {
+                    if key == KeyCode::KeyP {
+                        if pressed {
+                            *audio_running = !*audio_running;
+
+                            if *audio_running {
+                                audio_engine.start();
+                            } else {
+                                audio_engine.pause();
+                            }
+                        }
+                    } else {
                         if pressed {
                             keys.insert(key);
                         } else {

@@ -301,7 +301,7 @@ impl Menu {
                                                         None
                                                     }
                                                 }).collect();
-                                                difficulties.sort();
+                                                difficulties.sort_unstable();
 
                                                 let difficulty_ints: Vec<_> = difficulties.iter().map(|difficulty| (*difficulty).into()).collect();
                                                 let difficulty_ints_model = slintimpl::VecModel::default();

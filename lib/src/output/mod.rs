@@ -121,7 +121,7 @@ fn get_default_limits() -> Limits {
 
 fn get_sample_count(adapter: &Adapter, color_format: TextureFormat) -> u32 {
     let mut sample_counts = adapter.get_texture_format_features(color_format).flags.supported_sample_counts();
-    sample_counts.sort_by_key(|count| Reverse(*count));
+    sample_counts.sort_unstable_by_key(|count| Reverse(*count));
 
     sample_counts.into_iter().find(|count| *count <= MAX_SAMPLE_COUNT).unwrap_or(1)
 }

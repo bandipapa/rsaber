@@ -203,7 +203,7 @@ impl Window {
 }
 
 impl Model for Window {
-    fn fill_window(&self, inst_index: u32) -> InstWindowBuf {
+    fn fill_window(&self, inst_index: u16) -> InstWindowBuf {
         assert!(inst_index == 0);
 
         let inner = self.inner.borrow();

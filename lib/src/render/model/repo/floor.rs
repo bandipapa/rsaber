@@ -112,7 +112,7 @@ impl Floor {
 }
 
 impl Model for Floor {
-    fn fill_grid(&self, inst_index: u32) -> InstGridBuf {
+    fn fill_grid(&self, inst_index: u16) -> InstGridBuf {
         assert!(inst_index == 0);
 
         let inner = self.inner.borrow();

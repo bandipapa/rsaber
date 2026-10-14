@@ -5,7 +5,7 @@ use std::sync::Arc;
 #[cfg(feature = "test")]
 use std::time::Instant;
 
-use cgmath::{Angle, Deg, InnerSpace, Matrix4, Quaternion, Rotation3, Vector3};
+use cgmath::{Angle, Deg, InnerSpace, Matrix4, One, Quaternion, Rotation3, Vector3};
 
 use crate::asset::AssetManagerRc;
 use crate::audio::{AudioEngineRc, AudioFile, AudioFileHandle, AudioTimestamp};
@@ -36,6 +36,7 @@ const ZONE_IN3_DIST: f32 = 10.0; // [m]
 const ZONE_OUT_DIST: f32 = 15.0; // [m]
 
 const OBSTACLE_SPEED_TWEAK: f32 = 5.0;
+const OBSTACLE_SCALE_MIN: f32 = 0.025;
 
 const BOMB_COLOR: Color = Color([0.1, 0.1, 0.1]);
 const BOMB_PHONG_PARAM: PhongParam = PhongParam::new(0.1, 0.2, 0.3, 64.0);
@@ -206,6 +207,7 @@ struct ObstacleInfo {
     zone_info: ZoneInfo,
     x: f32,
     z: f32,
+    offset_y: f32,
     obstacle: Rc<Obstacle>,
 }
 
@@ -377,7 +379,7 @@ impl Game {
             Some(cube_info)
         }));
 
-        cube_infos.sort_by(|cube_info1, cube_info2| cube_info1.ts_spawn.partial_cmp(&cube_info2.ts_spawn).expect("Unable to compare"));
+        cube_infos.sort_unstable_by(|cube_info1, cube_info2| cube_info1.ts_spawn.total_cmp(&cube_info2.ts_spawn));
 
         // Setup obstacles.
 
@@ -415,11 +417,11 @@ impl Game {
             
             let ts_spawn = ts_start - zone_info.get_in123_t(); // TODO: Do we need to tweak ts_spawn because of scaling/rotation?
 
-            let x = (2.0 * obstacle_data.get_x() + obstacle_data.get_width()) * GRID_SIZE / 2.0;
-            let z = obstacle_data.get_y() * GRID_SIZE + OBSTACLE_FLOOR;
+            let mut x = (2.0 * obstacle_data.get_x() + obstacle_data.get_width()) * GRID_SIZE / 2.0;
+            let mut z = obstacle_data.get_y() * GRID_SIZE + OBSTACLE_FLOOR;
 
-            let scale_x = obstacle_data.get_width() * GRID_SIZE;
-            let scale_y = match obstacle_data.get_depth() {
+            let mut scale_x = obstacle_data.get_width() * GRID_SIZE;
+            let mut scale_y = match obstacle_data.get_depth() {
                 ObstacleDepth::Duration(duration) => {
                     let ts_end = match bpm_info.get_ts(bpm_pos + duration) {
                         Some(ts_end) => ts_end,
@@ -432,7 +434,13 @@ impl Game {
                     scale * GRID_SIZE
                 },
             };
-            let scale_z = obstacle_data.get_height() * GRID_SIZE;
+            let mut scale_z = obstacle_data.get_height() * GRID_SIZE;
+
+            // Make really small objects visible.
+
+            scale_x = scale_x.max(OBSTACLE_SCALE_MIN);
+            scale_y = scale_y.max(OBSTACLE_SCALE_MIN);
+            scale_z = scale_z.max(OBSTACLE_SCALE_MIN);
 
             let color = match obstacle_data.get_color_opt() {
                 Some(color) => color,
@@ -444,15 +452,30 @@ impl Game {
 
             obstacle.set_scale(scale_x, scale_y, scale_z);
 
-            if let Some(rot) = obstacle_data.get_rot_opt() {
-                obstacle.set_rot(rot);
-            }
+            let rot_one = Quaternion::one();
+            let rot = obstacle_data.get_rot_opt().unwrap_or(&rot_one);
+            obstacle.set_rot(rot);
+
+            // The object center is at the origin, but according to https://heck.aeroluna.dev/assets/items/frontcenter.png
+            // we need to move it to center-front-buttom (p0). The translation needs to
+            // be tweaked:
+            //
+            // p' = ROT * SCALE * (p + p0) + TRANS
+            //                               ^^^^^
+            // p' = (ROT * SCALE * p) + (ROT * SCALE * p0) + TRANS
+            //                          ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+            let offset = rot * Vector3::new(0.0 * scale_x, 0.5 * scale_y, 0.5 * scale_z);
+
+            x += offset.x;
+            z += offset.z;
+            let offset_y = offset.y;
 
             // Determine the timestamp, when the back side is reaching the player. Make sure
             // that the position is initial when calling calc_box().
 
             let (_, box_max) = obstacle.calc_box();
-            let ts_end = ts_start + box_max.y / zone_info.get_out_v();
+            let ts_end = ts_start + (box_max.y + offset_y) / zone_info.get_out_v();
 
             let obstacle_info = Rc::new(ObstacleInfo {
                 ts_start,
@@ -461,13 +484,14 @@ impl Game {
                 zone_info,
                 x,
                 z,
+                offset_y,
                 obstacle,
             });
 
             Some(obstacle_info)
         }));
 
-        obstacle_infos.sort_by(|obstacle_info1, obstacle_info2| obstacle_info1.ts_spawn.partial_cmp(&obstacle_info2.ts_spawn).expect("Unable to compare"));
+        obstacle_infos.sort_unstable_by(|obstacle_info1, obstacle_info2| obstacle_info1.ts_spawn.total_cmp(&obstacle_info2.ts_spawn));
 
         // Setup bombs.
 
@@ -505,7 +529,7 @@ impl Game {
             Some(bomb_info)
         }));
 
-        bomb_infos.sort_by(|bomb_info1, bomb_info2| bomb_info1.ts_spawn.partial_cmp(&bomb_info2.ts_spawn).expect("Unable to compare"));
+        bomb_infos.sort_unstable_by(|bomb_info1, bomb_info2| bomb_info1.ts_spawn.total_cmp(&bomb_info2.ts_spawn));
 
         // Setup stat window.
 
@@ -1214,7 +1238,7 @@ impl Obj for ObstacleObj {
         let ts_start = if !test { obstacle_info.ts_start - audio_ts } else { 0.0 };
         let (y, _) = zone_info.calc(ts_start, |_| {});
 
-        let pos = Vector3::new(obstacle_info.x, y + OFFSET_Y, obstacle_info.z);
+        let pos = Vector3::new(obstacle_info.x, y + OFFSET_Y + obstacle_info.offset_y, obstacle_info.z);
         obstacle_info.obstacle.set_pos(&pos);
         
         UpdateResult::Keep

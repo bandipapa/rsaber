@@ -3,7 +3,7 @@ use std::num::NonZeroU32;
 
 use bytemuck::{Pod, Zeroable};
 use cgmath::{Quaternion, Vector3};
-use wgpu::{vertex_attr_array, BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutEntry, BindingResource, BindingType, Face, FrontFace, PolygonMode, PrimitiveState, PrimitiveTopology, Sampler, SamplerBindingType, ShaderStages, TextureView, TextureSampleType, TextureViewDimension, VertexAttribute, VertexStepMode};
+use wgpu::{BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutEntry, BindingResource, BindingType, BlendState, Face, FrontFace, PolygonMode, PrimitiveState, PrimitiveTopology, Sampler, SamplerBindingType, ShaderStages, TextureSampleType, TextureView, TextureViewDimension, VertexAttribute, VertexStepMode, vertex_attr_array};
 
 use crate::output::{OutputBindGroupLayoutDesc, OutputDeviceRc, OutputVertexBufferLayout};
 use crate::util::IndexMap;
@@ -449,6 +449,29 @@ impl InstShaderType {
         }
     }
 
+    pub fn is_sorted(&self) -> bool {
+        match self {
+            InstShaderType::SimpleColor => false,
+            InstShaderType::PhongColor => false,
+            InstShaderType::Grid => false,
+            InstShaderType::Window => false,
+            InstShaderType::Obstacle => true,
+        }
+    }
+
+    pub fn get_pipeline_config(&self) -> ShaderPipelineConfig {
+        match self {
+            InstShaderType::SimpleColor => ShaderPipelineConfig::default(),
+            InstShaderType::PhongColor => ShaderPipelineConfig::default(),
+            InstShaderType::Grid => ShaderPipelineConfig::default(),
+            InstShaderType::Window => ShaderPipelineConfig::default(),
+            InstShaderType::Obstacle => ShaderPipelineConfig {
+                depth_write_enabled: false,
+                blend_state: BlendState::ALPHA_BLENDING,
+            },
+        }
+    }
+
     pub fn create_impl(&self) -> InstShaderImplType {
         match self { // TODO: Refactor match.
             InstShaderType::SimpleColor => InstShaderImplType::SimpleColor(InstSimpleColor::new()),
@@ -456,6 +479,30 @@ impl InstShaderType {
             InstShaderType::Grid => InstShaderImplType::Grid(InstGrid::new()),
             InstShaderType::Window => InstShaderImplType::Window(InstWindow::new()),
             InstShaderType::Obstacle => InstShaderImplType::Obstacle(InstObstacle::new()),
+        }
+    }
+}
+
+pub struct ShaderPipelineConfig {
+    depth_write_enabled: bool,
+    blend_state: BlendState,
+}
+
+impl ShaderPipelineConfig {
+    pub fn get_depth_write_enabled(&self) -> bool {
+        self.depth_write_enabled
+    }
+
+    pub fn get_blend_state(&self) -> &BlendState {
+        &self.blend_state
+    }
+}
+
+impl Default for ShaderPipelineConfig {
+    fn default() -> Self {
+        Self {
+            depth_write_enabled: true,
+            blend_state: BlendState::REPLACE,
         }
     }
 }

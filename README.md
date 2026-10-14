@@ -7,10 +7,11 @@ As there are no built-in levels, they are fetched from https://beatsaver.com/.
 
 Screenshots
 
-<img src="https://raw.githubusercontent.com/bandipapa/rsaber/refs/tags/v0.6.0/doc/menu1.jpg" width="300" height="163">
-<img src="https://raw.githubusercontent.com/bandipapa/rsaber/refs/tags/v0.6.0/doc/menu2.jpg" width="300" height="163">
-<img src="https://raw.githubusercontent.com/bandipapa/rsaber/refs/tags/v0.6.0/doc/game1.jpg" width="300" height="163">
-<img src="https://raw.githubusercontent.com/bandipapa/rsaber/refs/tags/v0.6.0/doc/game2.jpg" width="300" height="163">
+<img src="https://raw.githubusercontent.com/bandipapa/rsaber/refs/tags/v0.7.0/doc/menu1.jpg" width="300" height="163">
+<img src="https://raw.githubusercontent.com/bandipapa/rsaber/refs/tags/v0.7.0/doc/menu2.jpg" width="300" height="163">
+<img src="https://raw.githubusercontent.com/bandipapa/rsaber/refs/tags/v0.7.0/doc/game1.jpg" width="300" height="163">
+<img src="https://raw.githubusercontent.com/bandipapa/rsaber/refs/tags/v0.7.0/doc/game2.jpg" width="300" height="163">
+<img src="https://raw.githubusercontent.com/bandipapa/rsaber/refs/tags/v0.7.0/doc/game3.jpg" width="300" height="163" alt="Dance With The Dead - Scar [Wallmap]">
 
 ## Platform Support
 

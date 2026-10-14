@@ -11,68 +11,37 @@ use crate::render::model::{Color, InstObstacleBuf, InstShaderImplType, InstShade
 use crate::ui::UIManagerRc;
 
 const POS: f32 = 0.5;
-const OUTLINE: f32 = 1.0;
 
 static VERTEXES: LazyLock<Box<[VertexPosNormal]>> = LazyLock::new(|| {
     // Implementation notes:
     // - We don't have .obj file for box, calculate mesh.
     // - The box is freely scalable, however its outline width
-    //   should remain constant.
-    // - Each side of the box is composed of four rectangles.
-    // - These rectangles (after transformation) are copied to all 6 sides
+    //   is constant.
+    // - The side_datas (see below) is replicated to all 6 sides
     //   to construct the final box.
     // - The normal component of VertexPosNormal is used to store
-    //   the outline parameters to avoid defining new vertex type.
-    //
-    // +---+------------+---+
-    // |   |            |   |
-    // +---+------------+---+
-    // |   |      ^     |   |
-    // |   |      |+y   |   |
-    // |   |      o-+x->|   |
-    // |   |            |   |
-    // |   |            |   |
-    // +---+------------+---+
-    // |   |            |   |
-    // +---+------------+---+
+    //   the active face.
+    //   TODO: This is not efficient, improve it using custom vertex format?
 
-    let side_datas = [ // pos_x, pos_y, outline_x, outline_y
-        (-POS, POS, 0.0, 0.0),
-        (-POS, -POS, 0.0, 0.0),
-        (-POS, -POS, OUTLINE, 0.0),
-        (-POS, POS, OUTLINE, 0.0),
-
-        (-POS, -POS, 0.0, OUTLINE),
-        (-POS, -POS, 0.0, 0.0),
-        (POS, -POS, 0.0, 0.0),
-        (POS, -POS, 0.0, OUTLINE),
-
-        (POS, POS, -OUTLINE, 0.0),
-        (POS, -POS, -OUTLINE, 0.0),
-        (POS, -POS, 0.0, 0.0),
-        (POS, POS, 0.0, 0.0),
-
-        (-POS, POS, 0.0, 0.0),
-        (-POS, POS, 0.0, -OUTLINE),
-        (POS, POS, 0.0, -OUTLINE),
-        (POS, POS, 0.0, 0.0),
+    let side_datas = [
+        (-POS, POS),
+        (-POS, -POS),
+        (POS, -POS),
+        (POS, POS),
     ];
 
-    let tr_x_neg = |(pos_x, pos_y, outline_x, outline_y): (f32, f32, f32, f32)| VertexPosNormal { pos: [-POS, -pos_x, pos_y], normal: [0.0, -outline_x, outline_y] };
-    let tr_x_pos = |(pos_x, pos_y, outline_x, outline_y): (f32, f32, f32, f32)| VertexPosNormal { pos: [POS, pos_x, pos_y], normal: [0.0, outline_x, outline_y] };
-    let tr_y_neg = |(pos_x, pos_y, outline_x, outline_y): (f32, f32, f32, f32)| VertexPosNormal { pos: [pos_x, -POS, pos_y], normal: [outline_x, 0.0, outline_y] };
-    let tr_y_pos = |(pos_x, pos_y, outline_x, outline_y): (f32, f32, f32, f32)| VertexPosNormal { pos: [-pos_x, POS, pos_y], normal: [-outline_x, 0.0, outline_y] };
-    let tr_z_neg = |(pos_x, pos_y, outline_x, outline_y): (f32, f32, f32, f32)| VertexPosNormal { pos: [pos_x, -pos_y, -POS], normal: [outline_x, -outline_y, 0.0] };
-    let tr_z_pos = |(pos_x, pos_y, outline_x, outline_y): (f32, f32, f32, f32)| VertexPosNormal { pos: [pos_x, pos_y, POS], normal: [outline_x, outline_y, 0.0] };
+    let tr_x_neg = |(pos_x, pos_y): (f32, f32)| VertexPosNormal { pos: [-POS, -pos_x, pos_y], normal: [-1.0, 0.0, 0.0] };
+    let tr_x_pos = |(pos_x, pos_y): (f32, f32)| VertexPosNormal { pos: [POS, pos_x, pos_y], normal: [1.0, 0.0, 0.0] };
+    let tr_y_neg = |(pos_x, pos_y): (f32, f32)| VertexPosNormal { pos: [pos_x, -POS, pos_y], normal: [0.0, -1.0, 0.0] };
+    let tr_y_pos = |(pos_x, pos_y): (f32, f32)| VertexPosNormal { pos: [-pos_x, POS, pos_y], normal: [0.0, 1.0, 0.0] };
+    let tr_z_neg = |(pos_x, pos_y): (f32, f32)| VertexPosNormal { pos: [pos_x, -pos_y, -POS], normal: [0.0, 0.0, -1.0] };
+    let tr_z_pos = |(pos_x, pos_y): (f32, f32)| VertexPosNormal { pos: [pos_x, pos_y, POS], normal: [0.0, 0.0, 1.0] };
 
     let mut vertexes = Vec::new();
 
     for tr in [tr_x_neg, tr_x_pos, tr_y_neg, tr_y_pos, tr_z_neg, tr_z_pos] {
         for side_data in side_datas {
-            let mut vertex = tr(side_data);
-            vertex.pos[1] += POS;
-            vertex.pos[2] += POS;
-
+            let vertex = tr(side_data);
             vertexes.push(vertex);
         }
     }
@@ -98,23 +67,20 @@ impl ModelFactory for ObstacleParam {
     type Model = Obstacle;
 
     fn get_mesh(_asset_mgr: AssetManagerRc, output_device: OutputDeviceRc) -> Mesh {
-        // Mesh is unit (1m) sized and the origin is center-front-buttom,
-        // because of the rotation, see https://heck.aeroluna.dev/assets/items/frontcenter.png .
+        // Mesh is unit (1m) sized and the object center is at the origin.
 
         let mut indexes: Vec<u16> = Vec::new();
         let mut vertex_index = 0;
 
         for _i in 0..6 {
-            for _j in 0..4 {
-                indexes.push(vertex_index);
-                indexes.push(vertex_index + 1);
-                indexes.push(vertex_index + 2);
-                indexes.push(vertex_index);
-                indexes.push(vertex_index + 2);
-                indexes.push(vertex_index + 3);
+            indexes.push(vertex_index);
+            indexes.push(vertex_index + 1);
+            indexes.push(vertex_index + 2);
+            indexes.push(vertex_index);
+            indexes.push(vertex_index + 2);
+            indexes.push(vertex_index + 3);
 
-                vertex_index += 4;
-            }
+            vertex_index += 4;
         }
 
         let mut primitive_state = get_default_primitive_state();
@@ -205,7 +171,14 @@ impl Obstacle {
 }
 
 impl Model for Obstacle {
-    fn fill_obstacle(&self, inst_index: u32) -> InstObstacleBuf {
+    fn get_pos(&self, inst_index: u16) -> Vector3<f32> {
+        assert!(inst_index == 0);
+
+        let inner = self.inner.borrow();
+        inner.pos // TODO: More accurate way of calculating distance from camera.
+    }
+
+    fn fill_obstacle(&self, inst_index: u16) -> InstObstacleBuf {
         assert!(inst_index == 0);
 
         let inner = self.inner.borrow();

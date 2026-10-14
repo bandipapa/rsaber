@@ -92,7 +92,7 @@ impl Saber {
 }
 
 impl Model for Saber {
-    fn fill_phong_color(&self, inst_index: u32) -> InstPhongColorBuf {
+    fn fill_phong_color(&self, inst_index: u16) -> InstPhongColorBuf {
         let (color, phong_param) = match inst_index {
             0 => (&self.param.handle_color, &self.param.handle_phong_param),
             1 => (&self.param.ray_color, &self.param.ray_phong_param),

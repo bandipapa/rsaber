@@ -180,7 +180,7 @@ impl Cube {
 }
 
 impl Model for Cube {
-    fn fill_phong_color(&self, inst_index: u32) -> InstPhongColorBuf {
+    fn fill_phong_color(&self, inst_index: u16) -> InstPhongColorBuf {
         let (color, phong_param) = match inst_index {
             0 | 1 => (&self.param.body_color, &self.param.body_phong_param),
             2 | 3 => (&self.param.symbol_color, &self.param.symbol_phong_param),

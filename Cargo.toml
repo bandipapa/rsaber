@@ -7,7 +7,7 @@ members = ["android", "pc", "pcvr", "lib", "macros"]
 
 edition = "2024"
 description = "Beat Saber clone written in Rust"
-version = "0.6.0"
+version = "0.7.0"
 rust-version = "1.95.0"
 authors = ["András Szalai <andrew@bandipapa.com>"]
 repository = "https://github.com/bandipapa/rsaber"
